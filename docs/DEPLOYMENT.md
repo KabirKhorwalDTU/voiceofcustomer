@@ -53,6 +53,25 @@ After the Render service exists, add these GitHub repository secrets:
 
 Then run the `Deploy Backend To Render` workflow, or push changes under `backend/`.
 
+### One-command Finalization
+
+After a Render backend exists, this local script can trigger Render, wait for `/health`, set the Vercel API URL, redeploy the frontend, and run the cloud smoke test:
+
+```bash
+VITE_API_BASE_URL=https://YOUR-RENDER-SERVICE.onrender.com \
+RENDER_API_KEY=... \
+RENDER_SERVICE_ID=... \
+./scripts/finalize_cloud_deploy.sh
+```
+
+If you prefer Render deploy hooks:
+
+```bash
+VITE_API_BASE_URL=https://YOUR-RENDER-SERVICE.onrender.com \
+RENDER_DEPLOY_HOOK_URL=https://api.render.com/deploy/srv-... \
+./scripts/finalize_cloud_deploy.sh
+```
+
 ### Docker Fallback
 
 If Render cannot use the native Python service, create a Docker web service from `backend/Dockerfile`.

@@ -35,6 +35,8 @@ Without `DATABASE_URL`, the backend uses a local SQLite database at `backend/.lo
 
 See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and [`.env.production.example`](.env.production.example) for the deploy checklist.
 
+After a Render backend exists, `scripts/finalize_cloud_deploy.sh` can trigger the deploy, set Vercel's `VITE_API_BASE_URL`, redeploy the frontend, and run the cloud smoke test.
+
 ## Deployment Status
 
 Frontend production URL: https://frontend-eight-sandy-65.vercel.app
