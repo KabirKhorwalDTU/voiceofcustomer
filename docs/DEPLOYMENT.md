@@ -44,6 +44,31 @@ Render setup:
 
 After deploy, copy the Render backend URL.
 
+### Render API Service Creation
+
+If you have a Render API key and the repo has been pushed, this script can create the backend service:
+
+```bash
+RENDER_API_KEY=... \
+RENDER_OWNER_ID=... \
+RENDER_REPO_URL=https://github.com/OWNER/REPO \
+DATABASE_URL=... \
+APIFY_TOKEN=... \
+GEMINI_API_KEY=... \
+python3 scripts/create_render_backend.py
+```
+
+Optional variables:
+
+- `RENDER_SERVICE_NAME`, default `voc-ai-agent-api`
+- `RENDER_BRANCH`, default `main`
+- `RENDER_REGION`, default `singapore`
+- `RENDER_PLAN`, default `starter`
+- `DEEPSEEK_API_KEY`
+- `BACKEND_CORS_ORIGINS`, default `https://frontend-eight-sandy-65.vercel.app`
+
+Use `DRY_RUN=true` to print the redacted Render API payload without creating anything.
+
 ### GitHub Action Deploy
 
 After the Render service exists, add these GitHub repository secrets:

@@ -16,6 +16,7 @@ REQUIRED_FILES = [
     "data/supabase/schema.sql",
     "docs/DEPLOYMENT.md",
     "scripts/cloud_smoke.py",
+    "scripts/create_render_backend.py",
     "scripts/finalize_cloud_deploy.sh",
     "scripts/set_vercel_api_url.sh",
     ".github/workflows/ci.yml",
@@ -65,7 +66,12 @@ def main() -> int:
         if marker not in schema:
             fail(f"schema missing marker: {marker}")
 
-    for relative in ("scripts/cloud_smoke.py", "scripts/finalize_cloud_deploy.sh", "scripts/set_vercel_api_url.sh"):
+    for relative in (
+        "scripts/cloud_smoke.py",
+        "scripts/create_render_backend.py",
+        "scripts/finalize_cloud_deploy.sh",
+        "scripts/set_vercel_api_url.sh",
+    ):
         if not os.access(ROOT / relative, os.X_OK):
             fail(f"Script is not executable: {relative}")
 
@@ -80,4 +86,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

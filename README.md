@@ -36,6 +36,7 @@ Without `DATABASE_URL`, the backend uses a local SQLite database at `backend/.lo
 See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and [`.env.production.example`](.env.production.example) for the deploy checklist.
 
 After a Render backend exists, `scripts/finalize_cloud_deploy.sh` can trigger the deploy, set Vercel's `VITE_API_BASE_URL`, redeploy the frontend, and run the cloud smoke test.
+If the service does not exist yet, `scripts/create_render_backend.py` can create it from Render API credentials and a pushed Git repo.
 
 ## Deployment Status
 
