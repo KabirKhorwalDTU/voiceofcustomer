@@ -1,0 +1,37 @@
+name: Deploy Backend To Render
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "render.yaml"
+      - ".github/workflows/render-backend.yml"
+
+jobs:
+  verify-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r backend/requirements.txt
+      - run: pytest backend/tests
+      - run: python backend/eval/run_eval.py
+      - name: Trigger Render deploy
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+        run: |
+          test -n "$RENDER_API_KEY"
+          test -n "$RENDER_SERVICE_ID"
+          curl --fail-with-body \
+            --request POST \
+            --url "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/deploys" \
+            --header "accept: application/json" \
+            --header "authorization: Bearer ${RENDER_API_KEY}" \
+            --header "content-type: application/json" \
+            --data '{"clearCache":"do_not_clear"}'
+

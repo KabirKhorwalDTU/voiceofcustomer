@@ -21,7 +21,7 @@
 - Supabase schema migration `initial_voice_of_customer_schema` was applied and verified. Tables present: `companies`, `runs`, `reviews`, `settings`, `themes`. The singleton settings row is present with Gemini defaults.
 - Backend deployment is prepared through `render.yaml`, but was not pushed to Render because no Render CLI/token/project or GitHub remote target was available in the environment.
 - The deployed frontend currently needs `VITE_API_BASE_URL` set to the eventual Render backend URL and a redeploy before it can operate against the cloud backend. Until that is configured, production shows an API configuration error instead of calling localhost.
-- Added `docs/DEPLOYMENT.md`, `scripts/cloud_smoke.py`, and `scripts/set_vercel_api_url.sh` so backend deployment finalization can be run and verified as soon as Render access exists.
+- Added `docs/DEPLOYMENT.md`, `.github/workflows/render-backend.yml`, `backend/Dockerfile`, `scripts/cloud_smoke.py`, and `scripts/set_vercel_api_url.sh` so backend deployment finalization can be run and verified as soon as Render access exists.
 
 ## Apify Actor Pins
 

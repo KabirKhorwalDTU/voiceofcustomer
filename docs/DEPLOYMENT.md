@@ -44,6 +44,26 @@ Render setup:
 
 After deploy, copy the Render backend URL.
 
+### GitHub Action Deploy
+
+After the Render service exists, add these GitHub repository secrets:
+
+- `RENDER_API_KEY`
+- `RENDER_SERVICE_ID`
+
+Then run the `Deploy Backend To Render` workflow, or push changes under `backend/`.
+
+### Docker Fallback
+
+If Render cannot use the native Python service, create a Docker web service from `backend/Dockerfile`.
+
+Render Docker settings:
+
+- Dockerfile path: `backend/Dockerfile`
+- Docker context: `backend`
+- Health check path: `/health`
+- Start command: use the Dockerfile `CMD`
+
 ## Vercel Frontend Finalization
 
 Set `VITE_API_BASE_URL` to the Render backend URL and redeploy:
@@ -72,6 +92,12 @@ The smoke test checks:
 - Results endpoint.
 - CSV, JSON, and XLSX download endpoints.
 - Frontend HTTP 200.
+
+If production ingestion secrets are missing, runs should terminate as `partial` with source completeness details rather than silently using local sample data.
+
+## Production Environment Template
+
+Use [`.env.production.example`](../.env.production.example) as the non-secret checklist for Render and Vercel.
 
 ## Known External Blocker
 

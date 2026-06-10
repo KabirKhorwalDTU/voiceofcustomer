@@ -108,6 +108,10 @@ class LLMGateway:
         return not self.config.gemini_api_key and self.config.allow_dev_llm_fallback
 
     async def _json_call(self, payload: Dict[str, Any]) -> Any:
+        if self.provider == "deepseek" and not self.config.deepseek_api_key:
+            raise RuntimeError("DEEPSEEK_API_KEY is not configured.")
+        if self.provider != "deepseek" and not self.config.gemini_api_key:
+            raise RuntimeError("GEMINI_API_KEY is not configured.")
         await GLOBAL_BUCKET.wait()
         self.usage.calls += 1
         prompt = json.dumps(payload, ensure_ascii=False)

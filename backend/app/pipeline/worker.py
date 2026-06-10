@@ -86,6 +86,19 @@ class Worker:
             cleaned, dedup_ratio = clean_and_dedup(raw_reviews, float(settings.dedup_threshold))
             hashes = [review.review_hash for review in cleaned]
 
+            if not cleaned:
+                with session_scope() as session:
+                    run = session.get(Run, run_id)
+                    if run is None:
+                        return
+                    run.completeness = completeness
+                    run.source_counts = source_counts
+                    run.cost_estimate = cost
+                    run.dedup_ratio = dedup_ratio
+                    run.quarantine_rate = 0
+                    set_run_status(session, run, "partial", "No reviews were ingested; source completeness contains per-source details.")
+                return
+
             with session_scope() as session:
                 run = session.get(Run, run_id)
                 if run is None:

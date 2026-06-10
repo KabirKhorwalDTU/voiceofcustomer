@@ -33,6 +33,8 @@ Without `DATABASE_URL`, the backend uses a local SQLite database at `backend/.lo
 - `ALLOW_DEV_INGESTION_FALLBACK`: keep `false` in production.
 - `VITE_API_BASE_URL`: deployed backend URL for the Vercel frontend.
 
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and [`.env.production.example`](.env.production.example) for the deploy checklist.
+
 ## Deployment Status
 
 Frontend production URL: https://frontend-eight-sandy-65.vercel.app
