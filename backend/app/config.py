@@ -11,6 +11,7 @@ class AppConfig(BaseSettings):
     gemini_api_key: str = ""
     deepseek_api_key: str = ""
     allow_dev_llm_fallback: bool = True
+    allow_dev_ingestion_fallback: bool = True
     backend_cors_origins: str = "http://localhost:5173"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -35,4 +36,3 @@ class AppConfig(BaseSettings):
 @lru_cache
 def get_config() -> AppConfig:
     return AppConfig()
-

@@ -8,6 +8,7 @@
 - Database: Supabase managed Postgres, accessed by the backend through `DATABASE_URL`.
 - Visual direction: restrained operator-console SaaS UI because no visual reference or saved Product Design context was available.
 - LLM default: Gemini 2.5 Flash through the gateway. DeepSeek V3 is configurable from settings. A deterministic development fallback is enabled only when provider keys are absent and `ALLOW_DEV_LLM_FALLBACK=true`.
+- Production safety: Render sets `ALLOW_DEV_LLM_FALLBACK=false` and `ALLOW_DEV_INGESTION_FALLBACK=false`; local development can still use deterministic LLM/sample-ingestion fallbacks.
 
 ## Deployment Status
 
@@ -20,6 +21,7 @@
 - Supabase schema migration `initial_voice_of_customer_schema` was applied and verified. Tables present: `companies`, `runs`, `reviews`, `settings`, `themes`. The singleton settings row is present with Gemini defaults.
 - Backend deployment is prepared through `render.yaml`, but was not pushed to Render because no Render CLI/token/project or GitHub remote target was available in the environment.
 - The deployed frontend currently needs `VITE_API_BASE_URL` set to the eventual Render backend URL and a redeploy before it can operate against the cloud backend. Until that is configured, production shows an API configuration error instead of calling localhost.
+- Added `docs/DEPLOYMENT.md`, `scripts/cloud_smoke.py`, and `scripts/set_vercel_api_url.sh` so backend deployment finalization can be run and verified as soon as Render access exists.
 
 ## Apify Actor Pins
 

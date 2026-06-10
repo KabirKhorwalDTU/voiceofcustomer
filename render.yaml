@@ -18,5 +18,7 @@ services:
         sync: false
       - key: ALLOW_DEV_LLM_FALLBACK
         value: "false"
+      - key: ALLOW_DEV_INGESTION_FALLBACK
+        value: "false"
       - key: BACKEND_CORS_ORIGINS
         sync: false

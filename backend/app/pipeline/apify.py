@@ -128,7 +128,7 @@ def dev_reviews(company: Any, max_reviews: int) -> List[RawReview]:
 
 
 async def scrape_sources(company: Any, settings: Any, config: AppConfig, current_cost: float = 0) -> Tuple[List[RawReview], Dict[str, Any], Dict[str, int], float]:
-    if not config.apify_token:
+    if not config.apify_token and config.allow_dev_ingestion_fallback:
         reviews = dev_reviews(company, min(settings.max_reviews, 50))
         counts = {source: sum(1 for review in reviews if review.source == source) for source in SOURCES}
         completeness = {
@@ -136,6 +136,18 @@ async def scrape_sources(company: Any, settings: Any, config: AppConfig, current
             for source in SOURCES
         }
         return reviews, completeness, counts, current_cost
+
+    if not config.apify_token:
+        completeness = {
+            source: {
+                "status": "failed",
+                "attempts": 0,
+                "count": 0,
+                "error": "APIFY_TOKEN is not configured and development ingestion fallback is disabled.",
+            }
+            for source in SOURCES
+        }
+        return [], completeness, {source: 0 for source in SOURCES}, current_cost
 
     all_reviews: List[RawReview] = []
     completeness: Dict[str, Any] = {}

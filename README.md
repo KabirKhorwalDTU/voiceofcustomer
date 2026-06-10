@@ -29,6 +29,8 @@ Without `DATABASE_URL`, the backend uses a local SQLite database at `backend/.lo
 - `APIFY_TOKEN`: Apify API token.
 - `GEMINI_API_KEY`: Gemini key for default model.
 - `DEEPSEEK_API_KEY`: optional DeepSeek fallback/swap.
+- `ALLOW_DEV_LLM_FALLBACK`: keep `false` in production.
+- `ALLOW_DEV_INGESTION_FALLBACK`: keep `false` in production.
 - `VITE_API_BASE_URL`: deployed backend URL for the Vercel frontend.
 
 ## Deployment Status
