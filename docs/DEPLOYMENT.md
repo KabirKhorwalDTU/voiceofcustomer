@@ -114,6 +114,14 @@ The smoke test checks:
 
 If production ingestion secrets are missing, runs should terminate as `partial` with source completeness details rather than silently using local sample data.
 
+## Deployment Readiness Check
+
+CI runs this check to ensure the repo still contains the required deployment artifacts:
+
+```bash
+python3 scripts/check_deployment_readiness.py
+```
+
 ## Production Environment Template
 
 Use [`.env.production.example`](../.env.production.example) as the non-secret checklist for Render and Vercel.
