@@ -1,0 +1,172 @@
+import asyncio
+from typing import Dict, List, Optional
+
+from sqlalchemy import delete, select
+
+from app.config import get_config
+from app.db import session_scope
+from app.models import Review, Run, Theme
+from app.pipeline.apify import BudgetExceeded, scrape_sources
+from app.pipeline.cleaner import clean_and_dedup
+from app.pipeline.gateway import LLMGateway
+from app.pipeline.synth import build_theme_rows
+from app.pipeline.types import CleanReview, Tag
+from app.repository import get_settings, prior_tags_by_hash, set_run_status
+
+
+def stratified_sample(reviews: List[CleanReview], limit: int = 300) -> List[CleanReview]:
+    buckets: Dict[str, List[CleanReview]] = {}
+    for review in reviews:
+        key = f"{review.source}:{review.rating or 'none'}"
+        buckets.setdefault(key, []).append(review)
+    sample: List[CleanReview] = []
+    while buckets and len(sample) < limit:
+        for key in list(buckets.keys()):
+            values = buckets[key]
+            if values:
+                sample.append(values.pop(0))
+                if len(sample) >= limit:
+                    break
+            if not values:
+                buckets.pop(key, None)
+    return sample
+
+
+class Worker:
+    def __init__(self) -> None:
+        self._task: Optional[asyncio.Task] = None
+        self._stop = asyncio.Event()
+
+    def start(self) -> None:
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self.loop())
+
+    async def stop(self) -> None:
+        self._stop.set()
+        if self._task:
+            await self._task
+
+    async def loop(self) -> None:
+        while not self._stop.is_set():
+            run_id = self.next_run_id()
+            if run_id:
+                await self.process(run_id)
+            else:
+                await asyncio.sleep(1.5)
+
+    def next_run_id(self) -> Optional[str]:
+        with session_scope() as session:
+            run = session.execute(select(Run).where(Run.status == "queued").order_by(Run.created_at).limit(1)).scalars().first()
+            return run.id if run else None
+
+    async def process(self, run_id: str) -> None:
+        config = get_config()
+        try:
+            with session_scope() as session:
+                run = session.get(Run, run_id)
+                if run is None:
+                    return
+                settings = get_settings(session)
+                company = run.company
+                set_run_status(session, run, "scraping")
+                run.budget_cap = float(settings.per_run_budget_usd)
+                run.model_used = f"{settings.provider}:{settings.model}"
+
+            try:
+                raw_reviews, completeness, source_counts, cost = await scrape_sources(company, settings, config, 0)
+            except BudgetExceeded as exc:
+                with session_scope() as session:
+                    run = session.get(Run, run_id)
+                    if run:
+                        run.completeness = {"budget": {"status": "aborted", "error": str(exc)}}
+                        run.cost_estimate = float(settings.per_run_budget_usd)
+                        set_run_status(session, run, "partial", str(exc))
+                return
+
+            cleaned, dedup_ratio = clean_and_dedup(raw_reviews, float(settings.dedup_threshold))
+            hashes = [review.review_hash for review in cleaned]
+
+            with session_scope() as session:
+                run = session.get(Run, run_id)
+                if run is None:
+                    return
+                run.completeness = completeness
+                run.source_counts = source_counts
+                run.cost_estimate = cost
+                run.dedup_ratio = dedup_ratio
+                set_run_status(session, run, "classifying")
+
+                prior = prior_tags_by_hash(session, run.company_id, hashes)
+                review_rows: Dict[str, Review] = {}
+                new_reviews: List[CleanReview] = []
+                for review in cleaned:
+                    reused = prior.get(review.review_hash)
+                    row = Review(
+                        run_id=run.id,
+                        company_id=run.company_id,
+                        review_hash=review.review_hash,
+                        source=review.source,
+                        date=review.date,
+                        rating=review.rating,
+                        text=review.text,
+                        language=reused.language if reused else review.language,
+                        english_gloss=reused.english_gloss if reused else None,
+                        bucket=reused.bucket if reused else None,
+                        theme=reused.theme if reused else None,
+                        severity=reused.severity if reused else None,
+                    )
+                    session.add(row)
+                    review_rows[review.review_hash] = row
+                    if reused is None:
+                        new_reviews.append(review)
+                session.flush()
+
+            gateway = LLMGateway(config, settings)
+            theme_set = await gateway.discover_themes(stratified_sample(cleaned))
+            tags, usage = await gateway.classify_all(new_reviews, theme_set)
+            tag_map: Dict[str, Tag] = {tag.review_hash: tag for tag in tags}
+
+            with session_scope() as session:
+                run = session.get(Run, run_id)
+                if run is None:
+                    return
+                rows = list(session.execute(select(Review).where(Review.run_id == run.id)).scalars())
+                for row in rows:
+                    tag = tag_map.get(row.review_hash)
+                    if tag:
+                        row.language = tag.language
+                        row.english_gloss = tag.english_gloss
+                        row.bucket = tag.bucket
+                        row.theme = tag.theme if tag.theme in theme_set.get(tag.bucket, []) else "other"
+                        row.severity = tag.severity
+                    elif row.bucket and row.theme and row.theme not in theme_set.get(row.bucket, []):
+                        row.theme = "other"
+
+                run.cost_estimate = round(float(run.cost_estimate or 0) + usage.cost_usd, 4)
+                run.quarantine_rate = usage.quarantined_batches / usage.total_batches if usage.total_batches else 0
+                if run.cost_estimate > float(settings.per_run_budget_usd):
+                    set_run_status(session, run, "partial", "Budget cap exceeded after LLM processing")
+                session.execute(delete(Theme).where(Theme.run_id == run.id))
+                session.flush()
+                rows = list(session.execute(select(Review).where(Review.run_id == run.id)).scalars())
+                theme_rows = build_theme_rows(run, rows, settings.source_weights, settings.recency_window_days)
+                top_hashes = {
+                    quote.get("text")
+                    for theme in theme_rows
+                    for quote in (theme.top_quotes or [])
+                }
+                for row in rows:
+                    row.representative_flag = row.text in top_hashes
+                session.add_all(theme_rows)
+
+                failed_sources = [src for src, status in (run.completeness or {}).items() if status.get("status") not in {"ok"}]
+                terminal = "partial" if failed_sources or run.status == "partial" else "done"
+                set_run_status(session, run, terminal)
+        except Exception as exc:
+            with session_scope() as session:
+                run = session.get(Run, run_id)
+                if run:
+                    set_run_status(session, run, "failed", str(exc))
+
+
+worker = Worker()

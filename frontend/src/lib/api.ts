@@ -1,0 +1,125 @@
+const API_BASE = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? "http://localhost:8000" : "");
+
+export type Company = {
+  id: string;
+  name: string;
+  play_id?: string | null;
+  app_id?: string | null;
+  domain?: string | null;
+  brand_keyword: string;
+  created_at: string;
+};
+
+export type Run = {
+  id: string;
+  company_id: string;
+  status: "queued" | "scraping" | "classifying" | "done" | "partial" | "failed";
+  model_used?: string | null;
+  source_counts: Record<string, number>;
+  completeness: Record<string, { status: string; count?: number; error?: string; mode?: string }>;
+  cost_estimate: number;
+  budget_cap: number;
+  dedup_ratio: number;
+  quarantine_rate: number;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error?: string | null;
+  created_at: string;
+  company?: Company;
+};
+
+export type Review = {
+  id: string;
+  review_hash: string;
+  source: string;
+  date?: string | null;
+  rating?: number | null;
+  text: string;
+  language: string;
+  english_gloss?: string | null;
+  bucket?: string | null;
+  theme?: string | null;
+  severity?: number | null;
+  representative_flag: boolean;
+};
+
+export type Theme = {
+  id: string;
+  bucket: string;
+  theme: string;
+  count: number;
+  normalized_frequency: number;
+  avg_severity: number;
+  theme_score: number;
+  rank: number;
+  top_quotes: Array<Record<string, unknown>>;
+};
+
+export type Results = {
+  company: Company;
+  run: Run;
+  reviews: Review[];
+  themes: Theme[];
+  summary: Record<string, any>;
+  deck_spec: string;
+};
+
+export type Settings = {
+  provider: string;
+  model: string;
+  max_reviews: number;
+  batch_size: number;
+  recency_window_days: number;
+  dedup_threshold: number;
+  per_run_budget_usd: number;
+  source_weights: Record<string, number>;
+};
+
+async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  if (!API_BASE) {
+    throw new Error("API backend is not configured. Set VITE_API_BASE_URL to the deployed FastAPI backend URL and redeploy the frontend.");
+  }
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(options?.headers || {}),
+    },
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body || response.statusText);
+  }
+  return response.json() as Promise<T>;
+}
+
+export const api = {
+  baseUrl: API_BASE,
+  submitRun(payload: { name: string; play_link: string; app_store_link: string; website: string }) {
+    return request<{ run: Run; deduped_existing: boolean }>("/api/runs", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  runs() {
+    return request<Run[]>("/api/runs");
+  },
+  run(id: string) {
+    return request<Run>(`/api/runs/${id}`);
+  },
+  results(id: string) {
+    return request<Results>(`/api/runs/${id}/results`);
+  },
+  settings() {
+    return request<Settings>("/api/settings");
+  },
+  updateSettings(payload: Partial<Settings>) {
+    return request<Settings>("/api/settings", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+  downloadUrl(runId: string, fmt: "xlsx" | "csv" | "json") {
+    return `${API_BASE}/api/runs/${runId}/downloads/${fmt}`;
+  },
+};
