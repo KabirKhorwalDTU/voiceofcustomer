@@ -283,7 +283,22 @@ class Worker:
                     model=settings.model,
                     details={"new_reviews": len(new_reviews), "batch_size": settings.batch_size},
                 )
-            tags, usage = await gateway.classify_all(new_reviews, theme_set)
+            classification_timeout = max(420, ((len(new_reviews) + int(settings.batch_size) - 1) // int(settings.batch_size)) * 45)
+            try:
+                tags, usage = await asyncio.wait_for(gateway.classify_all(new_reviews, theme_set), timeout=classification_timeout)
+            except asyncio.TimeoutError:
+                usage = gateway.usage
+                total_batches = (len(new_reviews) + int(settings.batch_size) - 1) // int(settings.batch_size)
+                usage.path = f"{usage.path}_timeout_heuristic_fallback"
+                usage.total_batches = max(usage.total_batches, total_batches)
+                usage.quarantined_batches = max(usage.quarantined_batches, usage.total_batches)
+                usage.malformed_retries.append(
+                    {
+                        "attempt": "classification_timeout",
+                        "reason": f"classification exceeded {classification_timeout}s and fell back to quarantined heuristic tags",
+                    }
+                )
+                tags = [gateway._heuristic_tag(review, theme_set, quarantine=True) for review in new_reviews]
             tag_map: Dict[str, Tag] = {tag.review_hash: tag for tag in tags}
 
             with session_scope() as session:

@@ -142,6 +142,8 @@ def set_run_status(session: Session, run: Run, status: str, error: Optional[str]
         run.finished_at = datetime.now(timezone.utc)
     if error:
         run.error = error
+    elif status in {"scraping", "classifying", "done", "partial"}:
+        run.error = None
     session.flush()
 
 
