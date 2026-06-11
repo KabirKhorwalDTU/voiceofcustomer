@@ -1,10 +1,11 @@
 from collections import Counter, defaultdict
+import csv
 from datetime import date
 from io import BytesIO, StringIO
 import json
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-import pandas as pd
+from openpyxl import Workbook
 
 from app.models import Company, Review, Run, Theme
 
@@ -184,11 +185,44 @@ def export_reviews(reviews: List[Review], fmt: str) -> Tuple[bytes, str, str]:
         return json.dumps(records, indent=2).encode("utf-8"), "application/json", "tagged_reviews.json"
     if fmt == "csv":
         output = StringIO()
-        pd.DataFrame(records).to_csv(output, index=False)
+        fieldnames = list(records[0].keys()) if records else [
+            "review_hash",
+            "source",
+            "date",
+            "rating",
+            "text",
+            "language",
+            "english_gloss",
+            "bucket",
+            "theme",
+            "severity",
+            "representative_flag",
+        ]
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(records)
         return output.getvalue().encode("utf-8"), "text/csv", "tagged_reviews.csv"
     if fmt == "xlsx":
         output = BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            pd.DataFrame(records).to_excel(writer, index=False, sheet_name="reviews")
+        fieldnames = list(records[0].keys()) if records else [
+            "review_hash",
+            "source",
+            "date",
+            "rating",
+            "text",
+            "language",
+            "english_gloss",
+            "bucket",
+            "theme",
+            "severity",
+            "representative_flag",
+        ]
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "reviews"
+        sheet.append(fieldnames)
+        for record in records:
+            sheet.append([record.get(field) for field in fieldnames])
+        workbook.save(output)
         return output.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "tagged_reviews.xlsx"
     raise ValueError("Unsupported export format")
