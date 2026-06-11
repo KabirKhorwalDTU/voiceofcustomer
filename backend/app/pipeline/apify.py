@@ -372,7 +372,7 @@ async def scrape_sources(company: Any, settings: Any, config: AppConfig, current
         scrape_apify_source("mouthshut"),
     )
     for source, reviews, status in results:
-        projected = cost + float(status.get("cost_usd") or estimate_cost(len(reviews)))
+        projected = cost + float(status.get("cost_usd") or 0)
         if projected > float(settings.per_run_budget_usd):
             completeness[source] = {**status, "status": "aborted_budget", "count": 0}
             raise BudgetExceeded(f"Budget exceeded while adding {source}: projected ${projected:.4f}")

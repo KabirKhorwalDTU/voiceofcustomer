@@ -61,10 +61,10 @@ export function ResultsPage() {
   const disabled = completeness.filter(([, value]) => value.status === "disabled");
   const lowConfidence = results.run.quarantine_rate > 0.2;
   const geminiUsage = results.logs
-    .filter((log) => log.provider === "gemini")
+    .filter((log) => log.provider === "gemini" && log.stage === "classification" && log.event === "stage_completed")
     .reduce(
       (totals, log) => ({
-        calls: totals.calls + Number((log.details?.calls as number | undefined) || 0),
+        calls: totals.calls + Number(log.details?.calls || 0),
         cost: totals.cost + log.cost_usd,
         tokens: totals.tokens + log.total_tokens,
       }),
@@ -73,6 +73,11 @@ export function ResultsPage() {
   const apifyUsage = results.logs
     .filter((log) => log.provider === "apify" && log.event === "source_completed")
     .reduce((totals, log) => ({ cost: totals.cost + log.cost_usd, attempts: totals.attempts + Number(log.attempt || (log.details?.attempts as number | undefined) || 0) }), { cost: 0, attempts: 0 });
+  const otherUsage = results.logs
+    .filter((log) => !["gemini", "apify", ""].includes(log.provider || "") && log.cost_usd > 0)
+    .reduce((total, log) => total + log.cost_usd, 0);
+  const trackedCost = geminiUsage.cost + apifyUsage.cost + otherUsage;
+  const storedCostDelta = Math.abs(results.run.cost_estimate - trackedCost);
 
   return (
     <main className="page">
@@ -98,11 +103,16 @@ export function ResultsPage() {
       )}
       {disabled.length ? <section className="banner muted-banner">Disabled sources: {disabled.map(([source]) => source).join(", ")}</section> : null}
       {lowConfidence ? <section className="banner danger">Low confidence: {Math.round(results.run.quarantine_rate * 100)}% of LLM batches were quarantined.</section> : null}
+      {storedCostDelta > 0.005 ? (
+        <section className="banner muted-banner">
+          Legacy stored estimate: ${results.run.cost_estimate.toFixed(4)}. Tracked provider-log cost: ${trackedCost.toFixed(4)}.
+        </section>
+      ) : null}
 
       <section className="stats-grid">
         <Metric label="Reviews" value={String(results.summary.total_reviews || 0)} />
         <Metric label="Date range" value={`${results.summary.date_range?.start || "n/a"} to ${results.summary.date_range?.end || "n/a"}`} />
-        <Metric label="Cost" value={`$${results.run.cost_estimate.toFixed(3)} / $${results.run.budget_cap.toFixed(2)}`} />
+        <Metric label="Tracked cost" value={`$${trackedCost.toFixed(4)} / $${results.run.budget_cap.toFixed(2)}`} />
         <Metric label="Dedup" value={`${Math.round(results.run.dedup_ratio * 100)}%`} />
         <Metric label="Quarantine" value={`${Math.round(results.run.quarantine_rate * 100)}%`} />
       </section>

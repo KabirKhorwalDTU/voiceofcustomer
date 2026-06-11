@@ -128,6 +128,39 @@ def test_scraper_does_not_use_dev_samples_when_production_fallback_disabled():
     asyncio.run(run())
 
 
+def test_scraper_cost_only_counts_explicit_paid_source_costs(monkeypatch):
+    async def oss_reviews(source, _company, _max_reviews):
+        return [
+            RawReview(source=source, text=f"{source} review {index}", date=date.today(), rating=5)
+            for index in range(5)
+        ]
+
+    async def actor_reviews(source, _company, _max_reviews, _config, place_ids=None):
+        return [
+            RawReview(source=source, text=f"{source} review {index}", date=date.today(), rating=None)
+            for index in range(10)
+        ]
+
+    async def run():
+        monkeypatch.setattr("app.pipeline.apify.run_oss_store_scraper", oss_reviews)
+        monkeypatch.setattr("app.pipeline.apify.run_actor", actor_reviews)
+        config = AppConfig(apify_token="test-token", allow_dev_ingestion_fallback=False)
+        reviews, completeness, counts, cost = await scrape_sources(TestCompany(), TestSettings(), config)
+
+        assert len(reviews) == 20
+        assert counts["play"] == 5
+        assert counts["appstore"] == 5
+        assert counts["reddit"] == 10
+        assert completeness["play"]["provider"] == "oss"
+        assert completeness["play"]["cost_usd"] == 0
+        assert completeness["appstore"]["provider"] == "oss"
+        assert completeness["appstore"]["cost_usd"] == 0
+        assert completeness["reddit"]["provider"] == "apify"
+        assert cost == 0.001
+
+    asyncio.run(run())
+
+
 def test_apify_errors_redact_tokens():
     error = (
         "Client error for url "
