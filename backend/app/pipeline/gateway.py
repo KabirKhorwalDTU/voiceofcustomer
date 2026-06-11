@@ -435,10 +435,14 @@ class LLMGateway:
         for review in reviews:
             item = by_hash.get(review.review_hash)
             if not item:
-                raise ValueError("missing review tag")
+                self.usage.malformed_retries.append({"attempt": "row_fallback", "reason": "missing review tag", "review_hash": review.review_hash})
+                tags.append(self._heuristic_tag(review, theme_set))
+                continue
             bucket = item.get("bucket")
             if bucket not in BUCKETS:
-                raise ValueError("bad bucket")
+                self.usage.malformed_retries.append({"attempt": "row_fallback", "reason": "bad bucket", "review_hash": review.review_hash})
+                tags.append(self._heuristic_tag(review, theme_set))
+                continue
             theme = str(item.get("theme") or "other").strip().lower().replace(" ", "_")
             if theme not in theme_set[bucket]:
                 theme = "other"
