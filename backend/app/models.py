@@ -4,7 +4,7 @@ import uuid
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import Boolean, CHAR, Date, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CHAR, Date, DateTime, Enum, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
@@ -38,6 +38,21 @@ class Base(DeclarativeBase):
     pass
 
 
+RunStatus = Enum(
+    "queued",
+    "scraping",
+    "classifying",
+    "done",
+    "partial",
+    "failed",
+    name="run_status",
+    native_enum=True,
+    create_type=False,
+)
+ReviewSource = Enum("play", "appstore", "reddit", "maps", "mouthshut", name="review_source", native_enum=True, create_type=False)
+ReviewBucket = Enum("complaint", "feature_request", "praise", name="review_bucket", native_enum=True, create_type=False)
+
+
 class Company(Base):
     __tablename__ = "companies"
 
@@ -57,7 +72,7 @@ class Run(Base):
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=uuid_str)
     company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="queued", index=True)
+    status: Mapped[str] = mapped_column(RunStatus, nullable=False, default="queued", index=True)
     model_used: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     source_counts: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     completeness: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
@@ -81,13 +96,13 @@ class Review(Base):
     run_id: Mapped[str] = mapped_column(GUID(), ForeignKey("runs.id"), nullable=False, index=True)
     company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
     review_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    source: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    source: Mapped[str] = mapped_column(ReviewSource, nullable=False, index=True)
     date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     rating: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     language: Mapped[str] = mapped_column(String, nullable=False, default="other")
     english_gloss: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    bucket: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    bucket: Mapped[Optional[str]] = mapped_column(ReviewBucket, nullable=True)
     theme: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     severity: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     representative_flag: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
