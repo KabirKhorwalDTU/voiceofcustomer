@@ -99,6 +99,31 @@ create table if not exists themes (
 
 create index if not exists themes_run_rank_idx on themes(run_id, rank);
 
+create table if not exists run_logs (
+    id uuid primary key default gen_random_uuid(),
+    run_id uuid not null references runs(id) on delete cascade,
+    company_id uuid not null references companies(id) on delete cascade,
+    stage text not null,
+    event text not null,
+    status text not null default 'info',
+    source text,
+    provider text,
+    model text,
+    attempt integer,
+    cost_usd numeric(10, 6) not null default 0,
+    input_tokens integer not null default 0,
+    output_tokens integer not null default 0,
+    total_tokens integer not null default 0,
+    details jsonb not null default '{}'::jsonb,
+    created_at timestamptz not null default now()
+);
+
+create index if not exists run_logs_run_created_idx on run_logs(run_id, created_at);
+create index if not exists run_logs_company_created_idx on run_logs(company_id, created_at);
+create index if not exists run_logs_stage_idx on run_logs(stage);
+create index if not exists run_logs_source_idx on run_logs(source);
+create index if not exists run_logs_status_idx on run_logs(status);
+
 create table if not exists settings (
     id integer primary key default 1 check (id = 1),
     provider text not null default 'gemini',

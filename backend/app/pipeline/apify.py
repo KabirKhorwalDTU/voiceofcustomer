@@ -175,14 +175,33 @@ async def scrape_sources(company: Any, settings: Any, config: AppConfig, current
 
     async def scrape_one(source: str) -> Tuple[str, List[RawReview], Dict[str, Any]]:
         last_error = ""
+        attempt_details: List[Dict[str, Any]] = []
         for attempt in range(1, 4):
             try:
                 items = await run_actor(source, company, settings.max_reviews, config)
-                return source, items, {"status": "ok", "attempts": attempt, "actor": ACTORS[source], "count": len(items)}
+                cost_usd = estimate_cost(len(items))
+                attempt_details.append({"attempt": attempt, "status": "ok", "count": len(items), "cost_usd": cost_usd})
+                return source, items, {
+                    "status": "ok",
+                    "attempts": attempt,
+                    "actor": ACTORS[source],
+                    "count": len(items),
+                    "cost_usd": cost_usd,
+                    "attempt_details": attempt_details,
+                }
             except Exception as exc:
                 last_error = redact_error(exc)
+                attempt_details.append({"attempt": attempt, "status": "failed", "error": last_error})
                 await asyncio.sleep(attempt * 2)
-        return source, [], {"status": "failed", "attempts": 3, "actor": ACTORS[source], "error": last_error, "count": 0}
+        return source, [], {
+            "status": "failed",
+            "attempts": 3,
+            "actor": ACTORS[source],
+            "error": last_error,
+            "count": 0,
+            "cost_usd": 0,
+            "attempt_details": attempt_details,
+        }
 
     results = await asyncio.gather(*(scrape_one(source) for source in SOURCES))
     for source, reviews, status in results:

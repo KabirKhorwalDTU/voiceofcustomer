@@ -8,8 +8,8 @@ from app.config import get_config
 from app.db import init_db, session_scope
 from app.pipeline.synth import build_deck_spec, build_summary, export_reviews
 from app.pipeline.worker import worker
-from app.repository import create_run, get_company_runs, get_run, get_run_results, get_settings, list_runs, update_settings
-from app.schemas import ResultsOut, RunOut, SettingsOut, SettingsUpdate, SubmitRunRequest, SubmitRunResponse
+from app.repository import create_run, get_company_runs, get_run, get_run_logs, get_run_results, get_settings, list_runs, update_settings
+from app.schemas import ResultsOut, RunLogOut, RunOut, SettingsOut, SettingsUpdate, SubmitRunRequest, SubmitRunResponse
 
 
 app = FastAPI(title="Voice of Customer AI Agent", version="1.0.0")
@@ -82,9 +82,18 @@ def results(run_id: str) -> ResultsOut:
             run=run,
             reviews=reviews,
             themes=themes,
+            logs=get_run_logs(session, run_id),
             summary=build_summary(run, reviews, themes),
             deck_spec=deck_spec,
         )
+
+
+@app.get("/api/runs/{run_id}/logs", response_model=List[RunLogOut])
+def run_logs(run_id: str) -> List[RunLogOut]:
+    with session_scope() as session:
+        if not get_run(session, run_id):
+            raise HTTPException(status_code=404, detail="run not found")
+        return [RunLogOut.model_validate(row) for row in get_run_logs(session, run_id)]
 
 
 @app.get("/api/runs/{run_id}/downloads/{fmt}")

@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.orm import Session, joinedload
 
-from app.models import Company, Review, Run, Settings, Theme
+from app.models import Company, Review, Run, RunLog, Settings, Theme
 from app.pipeline.resolver import resolve_links
 from app.schemas import SubmitRunRequest
 
@@ -68,11 +68,33 @@ def create_run(session: Session, request: SubmitRunRequest) -> Tuple[Run, bool]:
         .order_by(desc(Run.created_at))
     ).scalars().first()
     if active:
+        log_run_event(
+            session,
+            active,
+            stage="queue",
+            event="deduped_existing_run",
+            status="ok",
+            details={"reason": "company already has an active run"},
+        )
         return active, True
     settings = get_settings(session)
     run = Run(company_id=company.id, status="queued", budget_cap=float(settings.per_run_budget_usd), company=company)
     session.add(run)
     session.flush()
+    log_run_event(
+        session,
+        run,
+        stage="queue",
+        event="run_queued",
+        status="ok",
+        details={
+            "company_name": company.name,
+            "play_id": company.play_id,
+            "app_id": company.app_id,
+            "domain": company.domain,
+            "brand_keyword": company.brand_keyword,
+        },
+    )
     return run, False
 
 
@@ -135,3 +157,44 @@ def prior_tags_by_hash(session: Session, company_id: str, hashes: List[str]) -> 
     for row in rows:
         result.setdefault(row.review_hash, row)
     return result
+
+
+def log_run_event(
+    session: Session,
+    run: Run,
+    stage: str,
+    event: str,
+    status: str = "info",
+    source: Optional[str] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    attempt: Optional[int] = None,
+    cost_usd: float = 0,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    total_tokens: int = 0,
+    details: Optional[Dict[str, Any]] = None,
+) -> RunLog:
+    row = RunLog(
+        run_id=run.id,
+        company_id=run.company_id,
+        stage=stage,
+        event=event,
+        status=status,
+        source=source,
+        provider=provider,
+        model=model,
+        attempt=attempt,
+        cost_usd=cost_usd,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        details=details or {},
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def get_run_logs(session: Session, run_id: str) -> List[RunLog]:
+    return list(session.execute(select(RunLog).where(RunLog.run_id == run_id).order_by(RunLog.created_at)).scalars())

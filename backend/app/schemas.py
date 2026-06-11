@@ -81,6 +81,27 @@ class ThemeOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class RunLogOut(BaseModel):
+    id: str
+    run_id: str
+    company_id: str
+    stage: str
+    event: str
+    status: str
+    source: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    attempt: Optional[int] = None
+    cost_usd: float
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    details: Dict[str, Any]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class SettingsOut(BaseModel):
     provider: str
     model: str
@@ -110,5 +131,6 @@ class ResultsOut(BaseModel):
     run: RunOut
     reviews: List[ReviewOut]
     themes: List[ThemeOut]
+    logs: List[RunLogOut] = []
     summary: Dict[str, Any]
     deck_spec: str

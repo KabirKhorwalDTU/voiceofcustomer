@@ -16,6 +16,14 @@ class LLMUsage:
     calls: int = 0
     quarantined_batches: int = 0
     total_batches: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    malformed_retries: List[Dict[str, Any]] = None
+
+    def __post_init__(self) -> None:
+        if self.malformed_retries is None:
+            self.malformed_retries = []
 
 
 class TokenBucket:
@@ -87,7 +95,8 @@ class LLMGateway:
             data = await self._json_call(prompt)
             try:
                 return self._validate_tags(data, reviews, theme_set)
-            except ValueError:
+            except ValueError as exc:
+                self.usage.malformed_retries.append({"attempt": attempt + 1, "reason": str(exc)})
                 if attempt == 2:
                     self.usage.quarantined_batches += 1
                     return [self._heuristic_tag(review, theme_set, quarantine=True) for review in reviews]
@@ -131,6 +140,10 @@ class LLMGateway:
             response.raise_for_status()
             data = response.json()
         text = data["candidates"][0]["content"]["parts"][0]["text"]
+        usage = data.get("usageMetadata") or {}
+        self.usage.input_tokens += int(usage.get("promptTokenCount") or 0)
+        self.usage.output_tokens += int(usage.get("candidatesTokenCount") or 0)
+        self.usage.total_tokens += int(usage.get("totalTokenCount") or 0)
         self.usage.cost_usd += 0.0001
         return json.loads(text)
 
@@ -145,6 +158,10 @@ class LLMGateway:
             response = await client.post("https://api.deepseek.com/chat/completions", headers=headers, json=body)
             response.raise_for_status()
             data = response.json()
+        usage = data.get("usage") or {}
+        self.usage.input_tokens += int(usage.get("prompt_tokens") or 0)
+        self.usage.output_tokens += int(usage.get("completion_tokens") or 0)
+        self.usage.total_tokens += int(usage.get("total_tokens") or 0)
         self.usage.cost_usd += 0.0002
         return json.loads(data["choices"][0]["message"]["content"])
 

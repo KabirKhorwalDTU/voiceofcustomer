@@ -11,7 +11,7 @@ from app.pipeline.cleaner import clean_and_dedup
 from app.pipeline.gateway import LLMGateway
 from app.pipeline.synth import build_theme_rows
 from app.pipeline.types import CleanReview, Tag
-from app.repository import get_settings, prior_tags_by_hash, set_run_status
+from app.repository import get_settings, log_run_event, prior_tags_by_hash, set_run_status
 
 
 def stratified_sample(reviews: List[CleanReview], limit: int = 300) -> List[CleanReview]:
@@ -71,6 +71,15 @@ class Worker:
                 set_run_status(session, run, "scraping")
                 run.budget_cap = float(settings.per_run_budget_usd)
                 run.model_used = f"{settings.provider}:{settings.model}"
+                log_run_event(
+                    session,
+                    run,
+                    stage="scraping",
+                    event="stage_started",
+                    status="ok",
+                    provider="apify",
+                    details={"max_reviews": settings.max_reviews, "budget_cap": float(settings.per_run_budget_usd)},
+                )
 
             try:
                 raw_reviews, completeness, source_counts, cost = await scrape_sources(company, settings, config, 0)
@@ -78,13 +87,89 @@ class Worker:
                 with session_scope() as session:
                     run = session.get(Run, run_id)
                     if run:
+                        log_run_event(
+                            session,
+                            run,
+                            stage="scraping",
+                            event="budget_exceeded",
+                            status="partial",
+                            provider="apify",
+                            cost_usd=float(settings.per_run_budget_usd),
+                            details={"error": str(exc)},
+                        )
                         run.completeness = {"budget": {"status": "aborted", "error": str(exc)}}
                         run.cost_estimate = float(settings.per_run_budget_usd)
                         set_run_status(session, run, "partial", str(exc))
                 return
 
+            with session_scope() as session:
+                run = session.get(Run, run_id)
+                if run is None:
+                    return
+                for source, status in completeness.items():
+                    for attempt in status.get("attempt_details", []):
+                        log_run_event(
+                            session,
+                            run,
+                            stage="scraping",
+                            event="source_attempt",
+                            status=attempt.get("status", status.get("status", "info")),
+                            source=source,
+                            provider="apify",
+                            attempt=attempt.get("attempt"),
+                            cost_usd=float(attempt.get("cost_usd") or 0),
+                            details={
+                                "actor": status.get("actor"),
+                                "count": attempt.get("count", 0),
+                                "error": attempt.get("error"),
+                            },
+                        )
+                    log_run_event(
+                        session,
+                        run,
+                        stage="scraping",
+                        event="source_completed",
+                        status=status.get("status", "info"),
+                        source=source,
+                        provider="apify",
+                        cost_usd=float(status.get("cost_usd") or 0),
+                        details={
+                            "actor": status.get("actor"),
+                            "attempts": status.get("attempts"),
+                            "count": status.get("count"),
+                            "error": status.get("error"),
+                        },
+                    )
+                log_run_event(
+                    session,
+                    run,
+                    stage="scraping",
+                    event="stage_completed",
+                    status="ok",
+                    provider="apify",
+                    cost_usd=float(cost),
+                    details={"source_counts": source_counts, "raw_reviews": len(raw_reviews)},
+                )
+
             cleaned, dedup_ratio = clean_and_dedup(raw_reviews, float(settings.dedup_threshold))
             hashes = [review.review_hash for review in cleaned]
+            with session_scope() as session:
+                run = session.get(Run, run_id)
+                if run is None:
+                    return
+                log_run_event(
+                    session,
+                    run,
+                    stage="cleaning",
+                    event="dedup_completed",
+                    status="ok",
+                    details={
+                        "raw_reviews": len(raw_reviews),
+                        "cleaned_reviews": len(cleaned),
+                        "dedup_ratio": dedup_ratio,
+                        "dedup_threshold": float(settings.dedup_threshold),
+                    },
+                )
 
             if not cleaned:
                 with session_scope() as session:
@@ -96,6 +181,14 @@ class Worker:
                     run.cost_estimate = cost
                     run.dedup_ratio = dedup_ratio
                     run.quarantine_rate = 0
+                    log_run_event(
+                        session,
+                        run,
+                        stage="terminal",
+                        event="run_completed",
+                        status="partial",
+                        details={"reason": "No reviews were ingested; source completeness contains per-source details."},
+                    )
                     set_run_status(session, run, "partial", "No reviews were ingested; source completeness contains per-source details.")
                 return
 
@@ -133,9 +226,59 @@ class Worker:
                     if reused is None:
                         new_reviews.append(review)
                 session.flush()
+                log_run_event(
+                    session,
+                    run,
+                    stage="classification",
+                    event="incremental_reuse_checked",
+                    status="ok",
+                    details={
+                        "cleaned_reviews": len(cleaned),
+                        "reused_reviews": len(cleaned) - len(new_reviews),
+                        "new_reviews": len(new_reviews),
+                    },
+                )
 
             gateway = LLMGateway(config, settings)
+            with session_scope() as session:
+                run = session.get(Run, run_id)
+                if run is None:
+                    return
+                log_run_event(
+                    session,
+                    run,
+                    stage="theme_discovery",
+                    event="stage_started",
+                    status="ok",
+                    provider=settings.provider,
+                    model=settings.model,
+                    details={"sample_size": len(stratified_sample(cleaned))},
+                )
             theme_set = await gateway.discover_themes(stratified_sample(cleaned))
+            with session_scope() as session:
+                run = session.get(Run, run_id)
+                if run is None:
+                    return
+                log_run_event(
+                    session,
+                    run,
+                    stage="theme_discovery",
+                    event="stage_completed",
+                    status="ok",
+                    provider=settings.provider,
+                    model=settings.model,
+                    details={"theme_set": theme_set},
+                )
+                log_run_event(
+                    session,
+                    run,
+                    stage="classification",
+                    event="stage_started",
+                    status="ok",
+                    provider=settings.provider,
+                    model=settings.model,
+                    details={"new_reviews": len(new_reviews), "batch_size": settings.batch_size},
+                )
             tags, usage = await gateway.classify_all(new_reviews, theme_set)
             tag_map: Dict[str, Tag] = {tag.review_hash: tag for tag in tags}
 
@@ -157,7 +300,36 @@ class Worker:
 
                 run.cost_estimate = round(float(run.cost_estimate or 0) + usage.cost_usd, 4)
                 run.quarantine_rate = usage.quarantined_batches / usage.total_batches if usage.total_batches else 0
+                log_run_event(
+                    session,
+                    run,
+                    stage="classification",
+                    event="stage_completed",
+                    status="ok" if usage.quarantined_batches == 0 else "partial",
+                    provider=settings.provider,
+                    model=settings.model,
+                    cost_usd=usage.cost_usd,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    total_tokens=usage.total_tokens,
+                    details={
+                        "calls": usage.calls,
+                        "total_batches": usage.total_batches,
+                        "quarantined_batches": usage.quarantined_batches,
+                        "malformed_retries": usage.malformed_retries,
+                        "tagged_reviews": len(tags),
+                    },
+                )
                 if run.cost_estimate > float(settings.per_run_budget_usd):
+                    log_run_event(
+                        session,
+                        run,
+                        stage="budget",
+                        event="budget_exceeded",
+                        status="partial",
+                        cost_usd=float(run.cost_estimate),
+                        details={"budget_cap": float(settings.per_run_budget_usd)},
+                    )
                     set_run_status(session, run, "partial", "Budget cap exceeded after LLM processing")
                 session.execute(delete(Theme).where(Theme.run_id == run.id))
                 session.flush()
@@ -171,14 +343,37 @@ class Worker:
                 for row in rows:
                     row.representative_flag = row.text in top_hashes
                 session.add_all(theme_rows)
+                log_run_event(
+                    session,
+                    run,
+                    stage="synthesis",
+                    event="themes_built",
+                    status="ok",
+                    details={"theme_count": len(theme_rows), "representative_quotes": len(top_hashes)},
+                )
 
                 failed_sources = [src for src, status in (run.completeness or {}).items() if status.get("status") not in {"ok"}]
                 terminal = "partial" if failed_sources or run.status == "partial" else "done"
+                log_run_event(
+                    session,
+                    run,
+                    stage="terminal",
+                    event="run_completed",
+                    status=terminal,
+                    cost_usd=float(run.cost_estimate or 0),
+                    details={
+                        "failed_sources": failed_sources,
+                        "source_counts": run.source_counts,
+                        "dedup_ratio": run.dedup_ratio,
+                        "quarantine_rate": run.quarantine_rate,
+                    },
+                )
                 set_run_status(session, run, terminal)
         except Exception as exc:
             with session_scope() as session:
                 run = session.get(Run, run_id)
                 if run:
+                    log_run_event(session, run, stage="terminal", event="run_failed", status="failed", details={"error": str(exc)})
                     set_run_status(session, run, "failed", str(exc))
 
 

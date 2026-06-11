@@ -55,11 +55,31 @@ export type Theme = {
   top_quotes: Array<Record<string, unknown>>;
 };
 
+export type RunLog = {
+  id: string;
+  run_id: string;
+  company_id: string;
+  stage: string;
+  event: string;
+  status: string;
+  source?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  attempt?: number | null;
+  cost_usd: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  details: Record<string, unknown>;
+  created_at: string;
+};
+
 export type Results = {
   company: Company;
   run: Run;
   reviews: Review[];
   themes: Theme[];
+  logs: RunLog[];
   summary: Record<string, any>;
   deck_spec: string;
 };
@@ -109,6 +129,9 @@ export const api = {
   },
   results(id: string) {
     return request<Results>(`/api/runs/${id}/results`);
+  },
+  logs(id: string) {
+    return request<RunLog[]>(`/api/runs/${id}/logs`);
   },
   settings() {
     return request<Settings>("/api/settings");

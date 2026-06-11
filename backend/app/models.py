@@ -126,6 +126,27 @@ class Theme(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class RunLog(Base):
+    __tablename__ = "run_logs"
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=uuid_str)
+    run_id: Mapped[str] = mapped_column(GUID(), ForeignKey("runs.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
+    stage: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    event: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="info", index=True)
+    source: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    provider: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    attempt: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    details: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 class Settings(Base):
     __tablename__ = "settings"
 

@@ -58,6 +58,19 @@ export function ResultsPage() {
 
   const completeness = Object.entries(results.run.completeness || {}) as Array<[string, { status: string }]>;
   const incomplete = completeness.filter(([, value]) => value.status !== "ok");
+  const geminiUsage = results.logs
+    .filter((log) => log.provider === "gemini")
+    .reduce(
+      (totals, log) => ({
+        calls: totals.calls + Number((log.details?.calls as number | undefined) || 0),
+        cost: totals.cost + log.cost_usd,
+        tokens: totals.tokens + log.total_tokens,
+      }),
+      { calls: 0, cost: 0, tokens: 0 },
+    );
+  const apifyUsage = results.logs
+    .filter((log) => log.provider === "apify" && log.event === "source_completed")
+    .reduce((totals, log) => ({ cost: totals.cost + log.cost_usd, attempts: totals.attempts + Number(log.attempt || (log.details?.attempts as number | undefined) || 0) }), { cost: 0, attempts: 0 });
 
   return (
     <main className="page">
@@ -90,7 +103,58 @@ export function ResultsPage() {
         <Metric label="Quarantine" value={`${Math.round(results.run.quarantine_rate * 100)}%`} />
       </section>
 
+      <section className="stats-grid usage-grid">
+        <Metric label="Gemini calls" value={String(geminiUsage.calls)} />
+        <Metric label="Gemini tokens" value={String(geminiUsage.tokens)} />
+        <Metric label="Gemini cost" value={`$${geminiUsage.cost.toFixed(4)}`} />
+        <Metric label="Apify attempts" value={String(apifyUsage.attempts)} />
+        <Metric label="Apify cost" value={`$${apifyUsage.cost.toFixed(4)}`} />
+      </section>
+
       <ResultsCharts results={results} />
+
+      <section className="panel">
+        <div className="section-heading">
+          <div>
+            <h2>Journey logs</h2>
+            <p>{results.logs.length} run events</p>
+          </div>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Stage</th>
+                <th>Event</th>
+                <th>Status</th>
+                <th>Source</th>
+                <th>Provider</th>
+                <th>Attempt</th>
+                <th>Cost</th>
+                <th>Tokens</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              {results.logs.map((log) => (
+                <tr key={log.id}>
+                  <td>{new Date(log.created_at).toLocaleTimeString()}</td>
+                  <td>{log.stage}</td>
+                  <td>{log.event}</td>
+                  <td>{log.status}</td>
+                  <td>{log.source || ""}</td>
+                  <td>{log.provider || ""}</td>
+                  <td>{log.attempt || ""}</td>
+                  <td>${log.cost_usd.toFixed(4)}</td>
+                  <td>{log.total_tokens || ""}</td>
+                  <td><code>{JSON.stringify(log.details)}</code></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       <section className="panel">
         <div className="section-heading">
