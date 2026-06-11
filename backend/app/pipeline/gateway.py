@@ -166,7 +166,12 @@ class LLMGateway:
             requests.append(self._generate_request(json.dumps(prompt, ensure_ascii=False), {"batch_index": index}))
         try:
             operation = await self._create_batch(requests, "voc-classification")
-            responses = await self._poll_batch(operation.get("name", ""))
+            self.usage.batch_probe = {
+                **self.usage.batch_probe,
+                "classification_operation": operation.get("name"),
+                "classification_timeout_seconds": 300,
+            }
+            responses = await self._poll_batch(operation.get("name", ""), timeout_seconds=300)
             tags: List[Tag] = []
             self.usage.total_batches = len(chunks)
             for index, batch in enumerate(chunks):
