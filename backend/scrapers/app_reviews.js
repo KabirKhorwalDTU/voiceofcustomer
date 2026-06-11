@@ -79,7 +79,8 @@ async function scrapePlay(input) {
 async function scrapeAppStore(input) {
   const maxReviews = Number(input.max_reviews || 3000);
   const pageSize = 50;
-  const pages = Math.max(1, Math.ceil(maxReviews / pageSize));
+  const pageLimit = Number(input.page_limit || 10);
+  const pages = Math.max(1, Math.min(pageLimit, Math.ceil(maxReviews / pageSize)));
   const all = [];
   for (let page = 1; page <= pages && all.length < maxReviews; page += 1) {
     const reviews = await astore.reviews({
