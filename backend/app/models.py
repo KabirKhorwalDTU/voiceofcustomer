@@ -115,7 +115,7 @@ class Theme(Base):
     id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=uuid_str)
     run_id: Mapped[str] = mapped_column(GUID(), ForeignKey("runs.id"), nullable=False, index=True)
     company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
-    bucket: Mapped[str] = mapped_column(String, nullable=False)
+    bucket: Mapped[str] = mapped_column(ReviewBucket, nullable=False)
     theme: Mapped[str] = mapped_column(String, nullable=False)
     count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     normalized_frequency: Mapped[float] = mapped_column(Float, nullable=False, default=0)
