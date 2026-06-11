@@ -53,6 +53,15 @@ def redact_error(value: Union[Exception, str]) -> str:
     return text
 
 
+def format_response_error(response: httpx.Response) -> str:
+    try:
+        body: Any = response.json()
+    except ValueError:
+        body = response.text
+    formatted = json.dumps(body, ensure_ascii=False) if not isinstance(body, str) else body
+    return redact_error(f"HTTP {response.status_code} for {response.request.url}: {formatted}")
+
+
 def _redact_match(match: re.Match) -> str:
     value = match.group(0)
     if value.startswith("token="):
@@ -87,7 +96,12 @@ def _field(item: Dict[str, Any], names: Iterable[str]) -> Any:
 
 
 def normalize_item(source: str, item: Dict[str, Any]) -> Optional[RawReview]:
-    text = _field(item, ["text", "review", "content", "body", "comment", "title"])
+    if source == "reddit":
+        title = str(_field(item, ["title"]) or "").strip()
+        body = str(_field(item, ["body", "content", "text"]) or "").strip()
+        text = "\n".join(part for part in [title, body] if part)
+    else:
+        text = _field(item, ["text", "review", "content", "body", "comment", "title"])
     if not text:
         return None
     rating = _field(item, ["rating", "score", "stars"])
@@ -129,7 +143,19 @@ def build_actor_input(source: str, company: Any, max_reviews: int, place_ids: Op
     if source == "appstore":
         return {"appId": company.app_id, "country": "in", "maxItems": cap, "sort": "mostRecent"}
     if source == "reddit":
-        return {"search": company.brand_keyword, "query": company.brand_keyword, "maxItems": cap, "sort": "new"}
+        return {
+            "searchPosts": True,
+            "searchComments": False,
+            "searchCommunities": False,
+            "searchTerms": [company.brand_keyword],
+            "searchSort": "new",
+            "searchTime": "all",
+            "maxPostsCount": cap,
+            "maxCommentsPerPost": 0,
+            "crawlCommentsPerPost": False,
+            "includeNSFW": False,
+            "proxy": {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"]},
+        }
     if source == "maps":
         if place_ids:
             return {"placeIds": place_ids, "maxReviews": cap, "language": "en"}
@@ -142,12 +168,13 @@ def build_actor_input(source: str, company: Any, max_reviews: int, place_ids: Op
 async def run_actor(source: str, company: Any, max_reviews: int, config: AppConfig, place_ids: Optional[List[str]] = None) -> List[RawReview]:
     actor_id = ACTORS[source]["id"].replace("/", "~")
     run_url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items"
-    params = {"timeout": 180, "memory": 1024}
+    params = {"timeout": 180, "memory": 512 if source == "reddit" else 1024}
     headers = {"Authorization": f"Bearer {config.apify_token}"}
     payload = build_actor_input(source, company, max_reviews, place_ids)
     async with httpx.AsyncClient(timeout=240) as client:
         response = await client.post(run_url, params=params, headers=headers, json=payload)
-        response.raise_for_status()
+        if response.is_error:
+            raise RuntimeError(format_response_error(response))
         items = response.json()
     normalized = [review for item in items if (review := normalize_item(source, item))]
     return normalized[: source_cap(source, max_reviews)]
@@ -184,30 +211,48 @@ async def run_oss_store_scraper(source: str, company: Any, max_reviews: int) -> 
 
 def place_matches_company(place: Dict[str, Any], company: Any) -> bool:
     domain = (company.domain or "").lower().replace("www.", "")
-    website = str(place.get("websiteUri") or "").lower()
     name = str((place.get("displayName") or {}).get("text") or "").lower()
     keyword = str(company.brand_keyword or company.name or "").lower()
-    if domain and domain in website:
+    normalized_name = re.sub(r"[^a-z0-9]+", "", name)
+    normalized_keyword = re.sub(r"[^a-z0-9]+", "", keyword)
+    if normalized_keyword and normalized_name == normalized_keyword:
         return True
-    return bool(keyword and keyword in name)
+    if domain:
+        domain_token = domain.split(".")[0]
+        normalized_domain = re.sub(r"[^a-z0-9]+", "", domain_token)
+        if normalized_domain and normalized_name == normalized_domain:
+            return True
+    return False
 
 
-async def discover_places(company: Any, config: AppConfig) -> Tuple[List[str], List[Dict[str, Any]]]:
+async def discover_places(company: Any, config: AppConfig) -> Tuple[List[str], List[Dict[str, Any]], List[str]]:
     if not config.google_maps_api_key:
         raise RuntimeError("GOOGLE_MAPS_API_KEY is not configured.")
-    query = f"{company.brand_keyword} {company.maps_location_hint or 'India'}"
+    location_hint = company.maps_location_hint or "India"
+    domain_token = (company.domain or "").lower().replace("www.", "").split(".")[0]
+    query_brands = [value for value in [domain_token, company.brand_keyword] if value]
+    query_brands = list(dict.fromkeys(query_brands))
+    queries = [f"{brand} {location_hint}" for brand in query_brands]
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": config.google_maps_api_key,
-        "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.websiteUri,places.googleMapsUri",
+        "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount",
     }
+    all_places: List[Dict[str, Any]] = []
+    attempted_queries: List[str] = []
     async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post("https://places.googleapis.com/v1/places:searchText", headers=headers, json={"textQuery": query, "pageSize": 10})
-        response.raise_for_status()
-        data = response.json()
-    places = data.get("places") or []
-    matched = [place for place in places if place_matches_company(place, company)]
-    return [place["id"] for place in matched if place.get("id")], matched
+        for query in queries:
+            attempted_queries.append(query)
+            response = await client.post("https://places.googleapis.com/v1/places:searchText", headers=headers, json={"textQuery": query})
+            if response.is_error:
+                raise RuntimeError(format_response_error(response))
+            data = response.json()
+            places = data.get("places") or []
+            all_places.extend(places)
+            matched = [place for place in places if place_matches_company(place, company)]
+            if matched:
+                return [place["id"] for place in matched if place.get("id")], matched, attempted_queries
+    return [], all_places, attempted_queries
 
 
 def dev_reviews(company: Any, max_reviews: int) -> List[RawReview]:
@@ -287,13 +332,14 @@ async def scrape_sources(company: Any, settings: Any, config: AppConfig, current
 
         place_ids: Optional[List[str]] = None
         places: List[Dict[str, Any]] = []
+        place_queries: List[str] = []
         if source == "maps":
             try:
-                place_ids, places = await discover_places(company, config)
+                place_ids, places, place_queries = await discover_places(company, config)
             except Exception as exc:
                 return source, [], {"status": "failed", "provider": "places_api", "actor": ACTORS[source], "attempts": 0, "count": 0, "cost_usd": 0, "error": redact_error(exc)}
             if not place_ids:
-                return source, [], {"status": "failed", "provider": "places_api", "actor": ACTORS[source], "attempts": 0, "count": 0, "cost_usd": 0, "error": "No matching Places API place_ids found.", "places": places}
+                return source, [], {"status": "failed", "provider": "places_api", "actor": ACTORS[source], "attempts": 0, "count": 0, "cost_usd": 0, "error": "No matching Places API place_ids found.", "places": places, "placeQueries": place_queries}
 
         last_error = ""
         attempt_details: List[Dict[str, Any]] = []
@@ -302,12 +348,18 @@ async def scrape_sources(company: Any, settings: Any, config: AppConfig, current
                 items = await run_actor(source, company, settings.max_reviews, config, place_ids=place_ids)
                 cost_usd = estimate_cost(len(items))
                 attempt_details.append({"attempt": attempt, "status": "ok", "provider": "apify", "count": len(items), "cost_usd": cost_usd})
-                return source, items, {"status": "ok", "provider": "apify", "actor": ACTORS[source], "attempts": attempt, "count": len(items), "cost_usd": cost_usd, "attempt_details": attempt_details, "places": places}
+                status = {"status": "ok", "provider": "apify", "actor": ACTORS[source], "attempts": attempt, "count": len(items), "cost_usd": cost_usd, "attempt_details": attempt_details, "places": places, "placeQueries": place_queries}
+                if source == "reddit":
+                    status["searchTerms"] = [company.brand_keyword]
+                return source, items, status
             except Exception as exc:
                 last_error = redact_error(exc)
                 attempt_details.append({"attempt": attempt, "status": "failed", "provider": "apify", "error": last_error})
                 await asyncio.sleep(attempt * 2)
-        return source, [], {"status": "failed", "provider": "apify", "actor": ACTORS[source], "attempts": 3, "count": 0, "cost_usd": 0, "attempt_details": attempt_details, "error": last_error, "places": places}
+        status = {"status": "failed", "provider": "apify", "actor": ACTORS[source], "attempts": 3, "count": 0, "cost_usd": 0, "attempt_details": attempt_details, "error": last_error, "places": places, "placeQueries": place_queries}
+        if source == "reddit":
+            status["searchTerms"] = [company.brand_keyword]
+        return source, [], status
 
     results = await asyncio.gather(
         scrape_store_with_fallback("play"),

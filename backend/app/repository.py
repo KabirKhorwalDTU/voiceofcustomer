@@ -152,12 +152,14 @@ def prior_tags_by_hash(session: Session, company_id: str, hashes: List[str]) -> 
         return {}
     rows = session.execute(
         select(Review)
+        .join(Run, Run.id == Review.run_id)
         .where(
             Review.company_id == company_id,
             Review.review_hash.in_(hashes),
             Review.bucket.is_not(None),
             Review.theme.is_not(None),
             Review.severity.is_not(None),
+            Run.quarantine_rate < 0.2,
         )
         .order_by(desc(Review.created_at))
     ).scalars()

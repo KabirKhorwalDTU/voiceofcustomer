@@ -32,6 +32,9 @@ def resolve_links(play_link: str, app_store_link: str, website: str, company_nam
         parsed_site = urlparse(website if "://" in website else f"https://{website}")
         domain = parsed_site.netloc.lower().replace("www.", "")
 
-    brand_keyword = domain.split(".")[0] if domain else company_name.strip()
+    domain_token = domain.split(".")[0] if domain else ""
+    name_slug = re.sub(r"[^a-z0-9]+", "", company_name.lower())
+    brand_keyword = domain_token or company_name.strip()
+    if name_slug and (domain_token == name_slug or domain_token.endswith(name_slug)):
+        brand_keyword = name_slug
     return ResolvedLinks(play_id=play_id, app_id=app_id, domain=domain, brand_keyword=brand_keyword)
-

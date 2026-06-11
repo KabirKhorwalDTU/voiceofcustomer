@@ -115,7 +115,7 @@ class Worker:
                             event="source_attempt",
                             status=attempt.get("status", status.get("status", "info")),
                             source=source,
-                            provider="apify",
+                            provider=attempt.get("provider", status.get("provider", "ingestion")),
                             attempt=attempt.get("attempt"),
                             cost_usd=float(attempt.get("cost_usd") or 0),
                             details={
@@ -142,6 +142,8 @@ class Worker:
                             "error": status.get("error"),
                             "reason": status.get("reason"),
                             "places": status.get("places"),
+                            "placeQueries": status.get("placeQueries"),
+                            "searchTerms": status.get("searchTerms"),
                         },
                     )
                 log_run_event(
@@ -245,7 +247,22 @@ class Worker:
                     },
                 )
 
-            gateway = LLMGateway(config, settings)
+            async def log_llm_progress(event: Dict[str, object]) -> None:
+                with session_scope() as progress_session:
+                    progress_run = progress_session.get(Run, run_id)
+                    if progress_run:
+                        log_run_event(
+                            progress_session,
+                            progress_run,
+                            stage="classification",
+                            event="llm_batch_progress",
+                            status="info",
+                            provider=settings.provider,
+                            model=settings.model,
+                            details=event,
+                        )
+
+            gateway = LLMGateway(config, settings, progress_callback=log_llm_progress)
             with session_scope() as session:
                 run = session.get(Run, run_id)
                 if run is None:
@@ -285,7 +302,7 @@ class Worker:
                     model=settings.model,
                     details={"new_reviews": len(new_reviews), "batch_size": settings.batch_size},
                 )
-            classification_timeout = max(420, ((len(new_reviews) + int(settings.batch_size) - 1) // int(settings.batch_size)) * 45)
+            classification_timeout = max(3600, ((len(new_reviews) + int(settings.batch_size) - 1) // int(settings.batch_size)) * 120)
             try:
                 tags, usage = await asyncio.wait_for(gateway.classify_all(new_reviews, theme_set), timeout=classification_timeout)
             except asyncio.TimeoutError:
@@ -340,6 +357,7 @@ class Worker:
                         "total_batches": usage.total_batches,
                         "quarantined_batches": usage.quarantined_batches,
                         "malformed_retries": usage.malformed_retries,
+                        "progress_events": usage.progress_events[-50:],
                         "tagged_reviews": len(tags),
                     },
                 )

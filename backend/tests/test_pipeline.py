@@ -4,7 +4,7 @@ from datetime import date
 import pytest
 
 from app.config import AppConfig
-from app.pipeline.apify import redact_error, scrape_sources
+from app.pipeline.apify import build_actor_input, redact_error, scrape_sources
 from app.config import get_config
 from app.pipeline.cleaner import clean_and_dedup, review_hash
 from app.pipeline.gateway import LLMGateway
@@ -44,6 +44,17 @@ def test_resolver_extracts_store_ids_and_brand_keyword():
     assert resolved.brand_keyword == "examplepay"
 
 
+def test_resolver_prefers_company_slug_for_prefixed_domains():
+    resolved = resolve_links(
+        "https://play.google.com/store/apps/details?id=com.company.pronto",
+        "https://apps.apple.com/in/app/pronto/id6743402816",
+        "https://withpronto.com/",
+        "Pronto",
+    )
+
+    assert resolved.brand_keyword == "pronto"
+
+
 def test_cleaner_dedups_near_duplicate_reviews():
     raw = [
         RawReview(source="play", text="Payment failed and money debited", date=date.today(), rating=1),
@@ -53,6 +64,31 @@ def test_cleaner_dedups_near_duplicate_reviews():
     cleaned, ratio = clean_and_dedup(raw, 0.86)
     assert len(cleaned) == 2
     assert ratio > 0
+
+
+def test_reddit_actor_input_uses_verified_search_schema():
+    payload = build_actor_input("reddit", TestCompany(), 100)
+
+    assert payload["searchPosts"] is True
+    assert payload["searchComments"] is False
+    assert payload["searchTerms"] == ["examplepay"]
+    assert payload["searchSort"] == "new"
+    assert payload["maxPostsCount"] == 100
+    assert payload["maxCommentsPerPost"] == 0
+    assert payload["proxy"] == {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"]}
+
+
+def test_gemini_batch_request_shape_matches_docs():
+    gateway = LLMGateway(get_config(), TestSettings())
+    request = gateway._generate_request("{}", {"key": "batch-0"})
+
+    assert request == {
+        "request": {
+            "contents": [{"parts": [{"text": "{}"}]}],
+            "generationConfig": {"responseMimeType": "application/json"},
+        },
+        "metadata": {"key": "batch-0"},
+    }
 
 
 def test_gateway_dev_classifier_handles_hinglish():
