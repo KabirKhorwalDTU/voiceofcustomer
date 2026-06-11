@@ -210,6 +210,8 @@ class Worker:
                 review_rows: Dict[str, Review] = {}
                 new_reviews: List[CleanReview] = []
                 for review in cleaned:
+                    if review.review_hash in review_rows:
+                        continue
                     reused = prior.get(review.review_hash)
                     row = Review(
                         run_id=run.id,
@@ -290,8 +292,8 @@ class Worker:
                 usage = gateway.usage
                 total_batches = (len(new_reviews) + int(settings.batch_size) - 1) // int(settings.batch_size)
                 usage.path = f"{usage.path}_timeout_heuristic_fallback"
-                usage.total_batches = max(usage.total_batches, total_batches)
-                usage.quarantined_batches = max(usage.quarantined_batches, usage.total_batches)
+                usage.total_batches = total_batches
+                usage.quarantined_batches = total_batches
                 usage.malformed_retries.append(
                     {
                         "attempt": "classification_timeout",
@@ -318,7 +320,7 @@ class Worker:
                         row.theme = "other"
 
                 run.cost_estimate = round(float(run.cost_estimate or 0) + usage.cost_usd, 4)
-                run.quarantine_rate = usage.quarantined_batches / usage.total_batches if usage.total_batches else 0
+                run.quarantine_rate = min(1, usage.quarantined_batches / usage.total_batches) if usage.total_batches else 0
                 log_run_event(
                     session,
                     run,
