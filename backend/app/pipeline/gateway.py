@@ -207,10 +207,10 @@ class LLMGateway:
             self.usage.batch_probe = {
                 **self.usage.batch_probe,
                 "classification_operation": operation.get("name"),
-                "classification_timeout_seconds": 1800,
+                "classification_timeout_seconds": 300,
             }
             await self._emit_progress("batch_submit_completed", operation=operation.get("name"), total_batches=len(chunks))
-            responses = await self._poll_batch(operation.get("name", ""), timeout_seconds=1800)
+            responses = await self._poll_batch(operation.get("name", ""), timeout_seconds=300)
             tags: List[Tag] = []
             self.usage.total_batches = len(chunks)
             for index, batch in enumerate(chunks):
