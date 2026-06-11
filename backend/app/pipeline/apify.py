@@ -104,11 +104,14 @@ def normalize_item(source: str, item: Dict[str, Any]) -> Optional[RawReview]:
         text = _field(item, ["text", "review", "content", "body", "comment", "title"])
     if not text:
         return None
-    rating = _field(item, ["rating", "score", "stars"])
-    try:
-        rating_int = int(float(rating)) if rating is not None else None
-    except (TypeError, ValueError):
+    if source == "reddit":
         rating_int = None
+    else:
+        rating = _field(item, ["rating", "score", "stars"])
+        try:
+            rating_int = int(float(rating)) if rating is not None else None
+        except (TypeError, ValueError):
+            rating_int = None
     return RawReview(
         source=source,
         text=str(text),
