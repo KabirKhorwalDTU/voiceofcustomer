@@ -43,6 +43,7 @@ def required_env_vars() -> List[Dict[str, str]]:
         "APIFY_TOKEN": env("APIFY_TOKEN"),
         "GEMINI_API_KEY": env("GEMINI_API_KEY"),
         "DEEPSEEK_API_KEY": env("DEEPSEEK_API_KEY", required=False),
+        "PYTHON_VERSION": env("PYTHON_VERSION", required=False, default="3.11.11"),
         "ALLOW_DEV_LLM_FALLBACK": "false",
         "ALLOW_DEV_INGESTION_FALLBACK": "false",
         "BACKEND_CORS_ORIGINS": cors,
