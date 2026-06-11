@@ -4,12 +4,34 @@ import uuid
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CHAR, Date, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 
 
 def uuid_str() -> str:
     return str(uuid.uuid4())
+
+
+class GUID(TypeDecorator):
+    impl = CHAR
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(PostgresUUID(as_uuid=False))
+        return dialect.type_descriptor(CHAR(36))
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        return str(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        return str(value)
 
 
 class Base(DeclarativeBase):
@@ -19,7 +41,7 @@ class Base(DeclarativeBase):
 class Company(Base):
     __tablename__ = "companies"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=uuid_str)
     name: Mapped[str] = mapped_column(String, nullable=False)
     play_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     app_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
@@ -33,8 +55,8 @@ class Company(Base):
 class Run(Base):
     __tablename__ = "runs"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
-    company_id: Mapped[str] = mapped_column(String(36), ForeignKey("companies.id"), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=uuid_str)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="queued", index=True)
     model_used: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     source_counts: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
@@ -55,9 +77,9 @@ class Review(Base):
     __tablename__ = "reviews"
     __table_args__ = (UniqueConstraint("run_id", "review_hash", name="reviews_run_hash_unique"),)
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
-    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("runs.id"), nullable=False, index=True)
-    company_id: Mapped[str] = mapped_column(String(36), ForeignKey("companies.id"), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=uuid_str)
+    run_id: Mapped[str] = mapped_column(GUID(), ForeignKey("runs.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
     review_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)
     source: Mapped[str] = mapped_column(String, nullable=False, index=True)
     date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
@@ -75,9 +97,9 @@ class Review(Base):
 class Theme(Base):
     __tablename__ = "themes"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
-    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("runs.id"), nullable=False, index=True)
-    company_id: Mapped[str] = mapped_column(String(36), ForeignKey("companies.id"), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=uuid_str)
+    run_id: Mapped[str] = mapped_column(GUID(), ForeignKey("runs.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
     bucket: Mapped[str] = mapped_column(String, nullable=False)
     theme: Mapped[str] = mapped_column(String, nullable=False)
     count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
