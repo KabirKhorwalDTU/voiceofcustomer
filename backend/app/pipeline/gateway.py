@@ -83,7 +83,14 @@ class LLMGateway:
             "reviews": [{"text": r.text, "rating": r.rating, "source": r.source, "language": r.language} for r in sample],
             "schema": {"complaint": ["theme"], "feature_request": ["theme"], "praise": ["theme"]},
         }
-        data = await self._json_call(prompt)
+        try:
+            data = await self._json_call(prompt)
+        except RuntimeError as exc:
+            if "API_KEY is not configured" in str(exc):
+                raise
+            self.usage.quarantined_batches += 1
+            self.usage.malformed_retries.append({"attempt": "theme_discovery_fallback", "reason": str(exc)})
+            return self._heuristic_theme_set(sample)
         return self._validate_theme_set(data)
 
     async def classify_batch(self, reviews: List[CleanReview], theme_set: ThemeSet) -> List[Tag]:
@@ -113,10 +120,10 @@ class LLMGateway:
             ],
         }
         for attempt in range(3):
-            data = await self._json_call(prompt)
             try:
+                data = await self._json_call(prompt)
                 return self._validate_tags(data, reviews, theme_set)
-            except ValueError as exc:
+            except (RuntimeError, ValueError) as exc:
                 self.usage.malformed_retries.append({"attempt": attempt + 1, "reason": str(exc)})
                 if attempt == 2:
                     self.usage.quarantined_batches += 1

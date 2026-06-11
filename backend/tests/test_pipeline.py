@@ -128,6 +128,55 @@ def test_gateway_validation_defaults_null_severity():
     assert tags[0].severity == 1
 
 
+def test_gateway_quarantines_theme_discovery_provider_failure():
+    async def run():
+        review = CleanReview(
+            source="maps",
+            review_hash="abc",
+            text="Payment failed",
+            date=date.today(),
+            rating=1,
+            language="en",
+        )
+        gateway = LLMGateway(AppConfig(gemini_api_key="test", allow_dev_llm_fallback=False), TestSettings())
+
+        async def fail(_payload):
+            raise RuntimeError("provider unavailable")
+
+        gateway._json_call = fail
+        themes = await gateway.discover_themes([review])
+
+        assert "payments_or_refunds" in themes["complaint"]
+        assert gateway.usage.quarantined_batches == 1
+
+    asyncio.run(run())
+
+
+def test_gateway_quarantines_classification_provider_failure():
+    async def run():
+        review = CleanReview(
+            source="maps",
+            review_hash="abc",
+            text="Payment failed",
+            date=date.today(),
+            rating=1,
+            language="en",
+        )
+        gateway = LLMGateway(AppConfig(gemini_api_key="test", allow_dev_llm_fallback=False), TestSettings())
+
+        async def fail(_payload):
+            raise RuntimeError("provider unavailable")
+
+        gateway._json_call = fail
+        tags = await gateway.classify_batch([review], {"complaint": ["other"], "feature_request": ["other"], "praise": ["other"]})
+
+        assert tags[0].review_hash == "abc"
+        assert tags[0].theme == "other"
+        assert gateway.usage.quarantined_batches == 1
+
+    asyncio.run(run())
+
+
 def test_gateway_requires_provider_key_when_dev_fallback_disabled():
     async def run():
         text = "Payment failed and money debited"
