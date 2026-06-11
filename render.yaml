@@ -4,7 +4,7 @@ services:
     env: python
     rootDir: backend
     plan: starter
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && npm ci --omit=dev
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
@@ -13,6 +13,8 @@ services:
       - key: APIFY_TOKEN
         sync: false
       - key: GEMINI_API_KEY
+        sync: false
+      - key: GOOGLE_MAPS_API_KEY
         sync: false
       - key: DEEPSEEK_API_KEY
         sync: false

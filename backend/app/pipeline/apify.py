@@ -1,6 +1,8 @@
 import asyncio
+import json
 import re
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import httpx
@@ -12,15 +14,17 @@ from app.pipeline.types import RawReview, SOURCES
 ACTORS: Dict[str, Dict[str, str]] = {
     "play": {"id": "neatrat/google-play-store-reviews-scraper", "version": "resolve-with-apify-token"},
     "appstore": {"id": "thewolves/appstore-reviews-scraper", "version": "resolve-with-apify-token"},
-    "reddit": {"id": "trudax/reddit-scraper", "version": "resolve-with-apify-token"},
+    "reddit": {"id": "harshmaur/reddit-scraper", "version": "resolve-with-apify-token"},
     "maps": {"id": "compass/google-maps-reviews-scraper", "version": "resolve-with-apify-token"},
-    "mouthshut": {"id": "getdataforme/mouthshut-reviews-scraper", "version": "resolve-with-apify-token"},
+    "mouthshut": {"id": "getdataforme/mouthshut-reviews-scraper", "version": "disabled-by-default"},
 }
 
 APIFY_RESULT_COST_PER_1000 = 0.10
 SECRET_PATTERNS = (
     re.compile(r"token=([^&\\s'\\\"]+)"),
+    re.compile(r"key=([^&\\s'\\\"]+)"),
     re.compile(r"apify_api_[A-Za-z0-9_-]+"),
+    re.compile(r"AIza[A-Za-z0-9_-]+"),
 )
 
 
@@ -30,9 +34,11 @@ class BudgetExceeded(Exception):
 
 def source_cap(source: str, max_reviews: int) -> int:
     if source == "maps":
+        return min(max_reviews, 1000)
+    if source == "reddit":
         return min(max_reviews, 100)
-    if source in {"reddit", "mouthshut"}:
-        return min(max_reviews, 500)
+    if source == "mouthshut":
+        return 0
     return max_reviews
 
 
@@ -48,8 +54,11 @@ def redact_error(value: Union[Exception, str]) -> str:
 
 
 def _redact_match(match: re.Match) -> str:
-    if match.group(0).startswith("token="):
+    value = match.group(0)
+    if value.startswith("token="):
         return "token=[redacted]"
+    if value.startswith("key="):
+        return "key=[redacted]"
     return "[redacted]"
 
 
@@ -95,33 +104,110 @@ def normalize_item(source: str, item: Dict[str, Any]) -> Optional[RawReview]:
     )
 
 
-def build_actor_input(source: str, company: Any, max_reviews: int) -> Dict[str, Any]:
+def normalize_oss_item(source: str, item: Dict[str, Any]) -> Optional[RawReview]:
+    text = item.get("text")
+    if not text:
+        return None
+    rating = item.get("rating")
+    try:
+        rating_int = int(float(rating)) if rating is not None else None
+    except (TypeError, ValueError):
+        rating_int = None
+    return RawReview(
+        source=source,
+        text=str(text),
+        date=_parse_date(item.get("date")),
+        rating=rating_int,
+        external_id=str(item.get("external_id") or ""),
+    )
+
+
+def build_actor_input(source: str, company: Any, max_reviews: int, place_ids: Optional[List[str]] = None) -> Dict[str, Any]:
     cap = source_cap(source, max_reviews)
     if source == "play":
-        return {"appId": company.play_id, "maxReviews": cap, "sort": "newest"}
+        return {"appIdOrUrl": company.play_id, "sortBy": "recent", "maxReviews": cap}
     if source == "appstore":
         return {"appId": company.app_id, "country": "in", "maxItems": cap, "sort": "mostRecent"}
     if source == "reddit":
-        return {"searches": [company.brand_keyword], "maxItems": cap, "sort": "new"}
+        return {"search": company.brand_keyword, "query": company.brand_keyword, "maxItems": cap, "sort": "new"}
     if source == "maps":
+        if place_ids:
+            return {"placeIds": place_ids, "maxReviews": cap, "language": "en"}
         return {"searchStringsArray": [company.brand_keyword], "maxReviews": cap, "language": "en"}
     if source == "mouthshut":
         return {"query": company.brand_keyword, "maxItems": cap}
     return {}
 
 
-async def run_actor(source: str, company: Any, max_reviews: int, config: AppConfig) -> List[RawReview]:
+async def run_actor(source: str, company: Any, max_reviews: int, config: AppConfig, place_ids: Optional[List[str]] = None) -> List[RawReview]:
     actor_id = ACTORS[source]["id"].replace("/", "~")
     run_url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items"
     params = {"timeout": 180, "memory": 1024}
     headers = {"Authorization": f"Bearer {config.apify_token}"}
-    payload = build_actor_input(source, company, max_reviews)
+    payload = build_actor_input(source, company, max_reviews, place_ids)
     async with httpx.AsyncClient(timeout=240) as client:
         response = await client.post(run_url, params=params, headers=headers, json=payload)
         response.raise_for_status()
         items = response.json()
     normalized = [review for item in items if (review := normalize_item(source, item))]
     return normalized[: source_cap(source, max_reviews)]
+
+
+async def run_oss_store_scraper(source: str, company: Any, max_reviews: int) -> List[RawReview]:
+    if source == "play" and not company.play_id:
+        raise ValueError("missing Play Store app id")
+    if source == "appstore" and not company.app_id:
+        raise ValueError("missing App Store app id")
+    script = Path(__file__).resolve().parents[2] / "scrapers" / "app_reviews.js"
+    payload = {
+        "source": source,
+        "app_id": company.play_id if source == "play" else company.app_id,
+        "max_reviews": source_cap(source, max_reviews),
+        "country": "in",
+        "langs": ["hi", "en"],
+        "throttle": 10,
+    }
+    proc = await asyncio.create_subprocess_exec(
+        "node",
+        str(script),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(proc.communicate(json.dumps(payload).encode()), timeout=600)
+    if proc.returncode != 0:
+        raise RuntimeError(stderr.decode("utf-8", errors="replace")[:2000] or "OSS scraper failed")
+    items = json.loads(stdout.decode("utf-8"))
+    normalized = [review for item in items if (review := normalize_oss_item(source, item))]
+    return normalized[: source_cap(source, max_reviews)]
+
+
+def place_matches_company(place: Dict[str, Any], company: Any) -> bool:
+    domain = (company.domain or "").lower().replace("www.", "")
+    website = str(place.get("websiteUri") or "").lower()
+    name = str((place.get("displayName") or {}).get("text") or "").lower()
+    keyword = str(company.brand_keyword or company.name or "").lower()
+    if domain and domain in website:
+        return True
+    return bool(keyword and keyword in name)
+
+
+async def discover_places(company: Any, config: AppConfig) -> Tuple[List[str], List[Dict[str, Any]]]:
+    if not config.google_maps_api_key:
+        raise RuntimeError("GOOGLE_MAPS_API_KEY is not configured.")
+    query = f"{company.brand_keyword} {company.maps_location_hint or 'India'}"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": config.google_maps_api_key,
+        "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.websiteUri,places.googleMapsUri",
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post("https://places.googleapis.com/v1/places:searchText", headers=headers, json={"textQuery": query, "pageSize": 10})
+        response.raise_for_status()
+        data = response.json()
+    places = data.get("places") or []
+    matched = [place for place in places if place_matches_company(place, company)]
+    return [place["id"] for place in matched if place.get("id")], matched
 
 
 def dev_reviews(company: Any, max_reviews: int) -> List[RawReview]:
@@ -135,8 +221,6 @@ def dev_reviews(company: Any, max_reviews: int) -> List[RawReview]:
         ("reddit", None, f"Anyone else seeing {base} KYC fail after uploading Aadhaar twice?"),
         ("reddit", None, f"{base} fees are transparent compared with my older wallet."),
         ("maps", 3, f"Branch staff helped eventually, but waiting time was too much."),
-        ("mouthshut", 1, f"Customer care ne ticket close kar diya without solving issue."),
-        ("mouthshut", 5, f"Bahut easy app hai, settlement fast mila."),
     ]
     reviews: List[RawReview] = []
     for idx, (source, rating, text) in enumerate(samples):
@@ -150,62 +234,90 @@ async def scrape_sources(company: Any, settings: Any, config: AppConfig, current
     if not config.apify_token and config.allow_dev_ingestion_fallback:
         reviews = dev_reviews(company, min(settings.max_reviews, 50))
         counts = {source: sum(1 for review in reviews if review.source == source) for source in SOURCES}
-        completeness = {
-            source: {"status": "ok", "mode": "dev_sample", "attempts": 0, "count": counts[source]}
-            for source in SOURCES
-        }
+        completeness = {source: {"status": "ok", "mode": "dev_sample", "attempts": 0, "count": counts[source]} for source in SOURCES}
         return reviews, completeness, counts, current_cost
-
-    if not config.apify_token:
-        completeness = {
-            source: {
-                "status": "failed",
-                "attempts": 0,
-                "count": 0,
-                "error": "APIFY_TOKEN is not configured and development ingestion fallback is disabled.",
-            }
-            for source in SOURCES
-        }
-        return [], completeness, {source: 0 for source in SOURCES}, current_cost
 
     all_reviews: List[RawReview] = []
     completeness: Dict[str, Any] = {}
     counts: Dict[str, int] = {}
     cost = current_cost
 
-    async def scrape_one(source: str) -> Tuple[str, List[RawReview], Dict[str, Any]]:
-        last_error = ""
+    async def scrape_store_with_fallback(source: str) -> Tuple[str, List[RawReview], Dict[str, Any]]:
         attempt_details: List[Dict[str, Any]] = []
+        for attempt in range(1, 4):
+            try:
+                items = await run_oss_store_scraper(source, company, settings.max_reviews)
+                attempt_details.append({"attempt": attempt, "status": "ok", "count": len(items), "provider": "oss"})
+                return source, items, {
+                    "status": "ok",
+                    "provider": "oss",
+                    "library": "facundoolano/google-play-scraper" if source == "play" else "facundoolano/app-store-scraper",
+                    "attempts": attempt,
+                    "count": len(items),
+                    "cost_usd": 0,
+                    "attempt_details": attempt_details,
+                }
+            except Exception as exc:
+                attempt_details.append({"attempt": attempt, "status": "failed", "provider": "oss", "error": redact_error(exc)})
+                await asyncio.sleep(attempt * 2)
+
+        if not config.apify_token:
+            return source, [], {"status": "failed", "provider": "oss", "attempts": 3, "count": 0, "cost_usd": 0, "attempt_details": attempt_details, "error": "OSS scraper failed and APIFY_TOKEN is not configured."}
+
+        last_error = ""
         for attempt in range(1, 4):
             try:
                 items = await run_actor(source, company, settings.max_reviews, config)
                 cost_usd = estimate_cost(len(items))
-                attempt_details.append({"attempt": attempt, "status": "ok", "count": len(items), "cost_usd": cost_usd})
-                return source, items, {
-                    "status": "ok",
-                    "attempts": attempt,
-                    "actor": ACTORS[source],
-                    "count": len(items),
-                    "cost_usd": cost_usd,
-                    "attempt_details": attempt_details,
-                }
+                attempt_details.append({"attempt": attempt, "status": "ok", "provider": "apify", "count": len(items), "cost_usd": cost_usd})
+                return source, items, {"status": "ok", "provider": "apify", "actor": ACTORS[source], "attempts": attempt, "count": len(items), "cost_usd": cost_usd, "attempt_details": attempt_details}
             except Exception as exc:
                 last_error = redact_error(exc)
-                attempt_details.append({"attempt": attempt, "status": "failed", "error": last_error})
+                attempt_details.append({"attempt": attempt, "status": "failed", "provider": "apify", "error": last_error})
                 await asyncio.sleep(attempt * 2)
-        return source, [], {
-            "status": "failed",
-            "attempts": 3,
-            "actor": ACTORS[source],
-            "error": last_error,
-            "count": 0,
-            "cost_usd": 0,
-            "attempt_details": attempt_details,
-        }
+        return source, [], {"status": "failed", "provider": "apify", "actor": ACTORS[source], "attempts": 3, "count": 0, "cost_usd": 0, "attempt_details": attempt_details, "error": last_error}
 
-    results = await asyncio.gather(*(scrape_one(source) for source in SOURCES))
+    async def scrape_apify_source(source: str) -> Tuple[str, List[RawReview], Dict[str, Any]]:
+        if source == "mouthshut":
+            return source, [], {"status": "disabled", "provider": "apify", "actor": ACTORS[source], "attempts": 0, "count": 0, "cost_usd": 0, "reason": "disabled_by_default"}
+        if source == "maps" and not company.maps_enabled:
+            return source, [], {"status": "disabled", "provider": "apify", "actor": ACTORS[source], "attempts": 0, "count": 0, "cost_usd": 0, "reason": "maps_opt_in_false"}
+        if not config.apify_token:
+            return source, [], {"status": "failed", "provider": "apify", "actor": ACTORS[source], "attempts": 0, "count": 0, "cost_usd": 0, "error": "APIFY_TOKEN is not configured."}
+
+        place_ids: Optional[List[str]] = None
+        places: List[Dict[str, Any]] = []
+        if source == "maps":
+            try:
+                place_ids, places = await discover_places(company, config)
+            except Exception as exc:
+                return source, [], {"status": "failed", "provider": "places_api", "actor": ACTORS[source], "attempts": 0, "count": 0, "cost_usd": 0, "error": redact_error(exc)}
+            if not place_ids:
+                return source, [], {"status": "failed", "provider": "places_api", "actor": ACTORS[source], "attempts": 0, "count": 0, "cost_usd": 0, "error": "No matching Places API place_ids found.", "places": places}
+
+        last_error = ""
+        attempt_details: List[Dict[str, Any]] = []
+        for attempt in range(1, 4):
+            try:
+                items = await run_actor(source, company, settings.max_reviews, config, place_ids=place_ids)
+                cost_usd = estimate_cost(len(items))
+                attempt_details.append({"attempt": attempt, "status": "ok", "provider": "apify", "count": len(items), "cost_usd": cost_usd})
+                return source, items, {"status": "ok", "provider": "apify", "actor": ACTORS[source], "attempts": attempt, "count": len(items), "cost_usd": cost_usd, "attempt_details": attempt_details, "places": places}
+            except Exception as exc:
+                last_error = redact_error(exc)
+                attempt_details.append({"attempt": attempt, "status": "failed", "provider": "apify", "error": last_error})
+                await asyncio.sleep(attempt * 2)
+        return source, [], {"status": "failed", "provider": "apify", "actor": ACTORS[source], "attempts": 3, "count": 0, "cost_usd": 0, "attempt_details": attempt_details, "error": last_error, "places": places}
+
+    results = await asyncio.gather(
+        scrape_store_with_fallback("play"),
+        scrape_store_with_fallback("appstore"),
+        scrape_apify_source("reddit"),
+        scrape_apify_source("maps"),
+        scrape_apify_source("mouthshut"),
+    )
     for source, reviews, status in results:
-        projected = cost + estimate_cost(len(reviews))
+        projected = cost + float(status.get("cost_usd") or estimate_cost(len(reviews)))
         if projected > float(settings.per_run_budget_usd):
             completeness[source] = {**status, "status": "aborted_budget", "count": 0}
             raise BudgetExceeded(f"Budget exceeded while adding {source}: projected ${projected:.4f}")

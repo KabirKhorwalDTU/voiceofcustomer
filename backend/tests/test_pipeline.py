@@ -15,8 +15,8 @@ from app.pipeline.types import CleanReview, RawReview
 
 class TestSettings:
     provider = "gemini"
-    model = "gemini-2.5-flash"
-    batch_size = 25
+    model = "gemini-3.1-flash-lite"
+    batch_size = 100
     max_reviews = 50
     per_run_budget_usd = 1
 
@@ -26,6 +26,9 @@ class TestCompany:
     brand_keyword = "examplepay"
     play_id = "com.example.pay"
     app_id = "123456789"
+    domain = "examplepay.com"
+    maps_enabled = False
+    maps_location_hint = "India"
 
 
 def test_resolver_extracts_store_ids_and_brand_keyword():
@@ -81,8 +84,10 @@ def test_scraper_does_not_use_dev_samples_when_production_fallback_disabled():
         assert reviews == []
         assert cost == 0
         assert set(counts.values()) == {0}
-        assert {status["status"] for status in completeness.values()} == {"failed"}
-        assert all("APIFY_TOKEN" in status["error"] for status in completeness.values())
+        assert completeness["maps"]["status"] == "disabled"
+        assert completeness["mouthshut"]["status"] == "disabled"
+        assert completeness["reddit"]["status"] == "failed"
+        assert "APIFY_TOKEN" in completeness["reddit"]["error"]
 
     asyncio.run(run())
 

@@ -57,7 +57,9 @@ export function ResultsPage() {
   }
 
   const completeness = Object.entries(results.run.completeness || {}) as Array<[string, { status: string }]>;
-  const incomplete = completeness.filter(([, value]) => value.status !== "ok");
+  const incomplete = completeness.filter(([, value]) => !["ok", "disabled"].includes(value.status));
+  const disabled = completeness.filter(([, value]) => value.status === "disabled");
+  const lowConfidence = results.run.quarantine_rate > 0.2;
   const geminiUsage = results.logs
     .filter((log) => log.provider === "gemini")
     .reduce(
@@ -94,6 +96,8 @@ export function ResultsPage() {
       ) : (
         <section className="banner ok">All configured sources completed.</section>
       )}
+      {disabled.length ? <section className="banner muted-banner">Disabled sources: {disabled.map(([source]) => source).join(", ")}</section> : null}
+      {lowConfidence ? <section className="banner danger">Low confidence: {Math.round(results.run.quarantine_rate * 100)}% of LLM batches were quarantined.</section> : null}
 
       <section className="stats-grid">
         <Metric label="Reviews" value={String(results.summary.total_reviews || 0)} />

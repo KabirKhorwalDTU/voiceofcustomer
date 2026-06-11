@@ -15,8 +15,8 @@ from app.pipeline.types import CleanReview
 
 class EvalSettings:
     provider = "gemini"
-    model = "gemini-2.5-flash"
-    batch_size = 25
+    model = "gemini-3.1-flash-lite"
+    batch_size = 100
 
 
 async def main() -> int:
@@ -39,10 +39,14 @@ async def main() -> int:
     by_hash = {tag.review_hash: tag for tag in tags}
     bucket_hits = 0
     severity_hits = 0
+    class_totals = {}
+    class_hits = {}
     for item, review in zip(fixture, reviews):
         tag = by_hash[review.review_hash]
         bucket_hits += int(tag.bucket == item["bucket"])
         severity_hits += int(tag.severity == item["severity"])
+        class_totals[item["bucket"]] = class_totals.get(item["bucket"], 0) + 1
+        class_hits[item["bucket"]] = class_hits.get(item["bucket"], 0) + int(tag.bucket == item["bucket"])
     bucket_accuracy = bucket_hits / len(fixture)
     severity_accuracy = severity_hits / len(fixture)
     score = (bucket_accuracy * 0.75) + (severity_accuracy * 0.25)
@@ -50,6 +54,10 @@ async def main() -> int:
         "fixture_count": len(fixture),
         "bucket_accuracy": round(bucket_accuracy, 4),
         "severity_accuracy": round(severity_accuracy, 4),
+        "per_class_accuracy": {
+            bucket: round(class_hits.get(bucket, 0) / total, 4)
+            for bucket, total in sorted(class_totals.items())
+        },
         "weighted_score": round(score, 4),
         "provider": gateway.provider,
         "model": gateway.model,
@@ -60,4 +68,3 @@ async def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(asyncio.run(main()))
-

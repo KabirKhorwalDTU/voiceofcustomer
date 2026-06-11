@@ -1,0 +1,10 @@
+{
+  "name": "voc-ai-agent-backend-scrapers",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "app-store-scraper": "0.18.0",
+    "google-play-scraper": "10.0.0"
+  }
+}

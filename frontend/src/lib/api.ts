@@ -7,6 +7,8 @@ export type Company = {
   app_id?: string | null;
   domain?: string | null;
   brand_keyword: string;
+  maps_enabled: boolean;
+  maps_location_hint: string;
   created_at: string;
 };
 
@@ -115,7 +117,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   baseUrl: API_BASE,
-  submitRun(payload: { name: string; play_link: string; app_store_link: string; website: string }) {
+  submitRun(payload: { name: string; play_link: string; app_store_link: string; website: string; maps_enabled?: boolean; maps_location_hint?: string }) {
     return request<{ run: Run; deduped_existing: boolean }>("/api/runs", {
       method: "POST",
       body: JSON.stringify(payload),

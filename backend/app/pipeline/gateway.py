@@ -1,5 +1,6 @@
 import asyncio
 import json
+import random
 import re
 from dataclasses import dataclass
 from json import JSONDecodeError
@@ -21,10 +22,14 @@ class LLMUsage:
     output_tokens: int = 0
     total_tokens: int = 0
     malformed_retries: List[Dict[str, Any]] = None
+    path: str = "sync"
+    batch_probe: Dict[str, Any] = None
 
     def __post_init__(self) -> None:
         if self.malformed_retries is None:
             self.malformed_retries = []
+        if self.batch_probe is None:
+            self.batch_probe = {}
 
 
 class TokenBucket:
@@ -43,7 +48,7 @@ class TokenBucket:
             self._last = loop.time()
 
 
-GLOBAL_BUCKET = TokenBucket(rate_per_minute=15)
+GLOBAL_BUCKET = TokenBucket(rate_per_minute=13)
 SECRET_PATTERNS = (
     re.compile(r"key=([^&\\s'\\\"]+)"),
     re.compile(r"AQ\\.[A-Za-z0-9_-]+"),
@@ -131,12 +136,58 @@ class LLMGateway:
         return []
 
     async def classify_all(self, reviews: List[CleanReview], theme_set: ThemeSet) -> Tuple[List[Tag], LLMUsage]:
+        if reviews and self.provider == "gemini" and not self._dev_mode and await self._batch_available():
+            return await self._classify_all_batch(reviews, theme_set)
         tags: List[Tag] = []
         for index in range(0, len(reviews), self.batch_size):
             batch = reviews[index : index + self.batch_size]
             self.usage.total_batches += 1
             tags.extend(await self.classify_batch(batch, theme_set))
         return tags, self.usage
+
+    async def _batch_available(self) -> bool:
+        self.usage.path = "sync"
+        prompt = json.dumps({"task": "Return strict JSON.", "schema": {"ok": True}}, ensure_ascii=False)
+        try:
+            operation = await self._create_batch([self._generate_request(prompt, {"probe": True})], "voc-batch-probe")
+            self.usage.batch_probe = {"status": "created", "operation": operation.get("name")}
+            self.usage.path = "batch"
+            return True
+        except Exception as exc:
+            self.usage.batch_probe = {"status": "sync_fallback", "reason": redact_llm_error(exc)}
+            self.usage.path = "sync"
+            return False
+
+    async def _classify_all_batch(self, reviews: List[CleanReview], theme_set: ThemeSet) -> Tuple[List[Tag], LLMUsage]:
+        chunks = [reviews[index : index + self.batch_size] for index in range(0, len(reviews), self.batch_size)]
+        requests = []
+        for index, batch in enumerate(chunks):
+            prompt = self._classification_prompt(batch, theme_set)
+            requests.append(self._generate_request(json.dumps(prompt, ensure_ascii=False), {"batch_index": index}))
+        try:
+            operation = await self._create_batch(requests, "voc-classification")
+            responses = await self._poll_batch(operation.get("name", ""))
+            tags: List[Tag] = []
+            self.usage.total_batches = len(chunks)
+            for index, batch in enumerate(chunks):
+                try:
+                    data = self._batch_response_json(responses[index])
+                    tags.extend(self._validate_tags(data, batch, theme_set))
+                except Exception as exc:
+                    self.usage.quarantined_batches += 1
+                    self.usage.malformed_retries.append({"attempt": f"batch_{index}", "reason": redact_llm_error(exc)})
+                    tags.extend(self._heuristic_tag(review, theme_set, quarantine=True) for review in batch)
+            self.usage.path = "batch"
+            return tags, self.usage
+        except Exception as exc:
+            self.usage.batch_probe = {**self.usage.batch_probe, "classification_fallback": redact_llm_error(exc)}
+            self.usage.path = "sync"
+            tags: List[Tag] = []
+            for index in range(0, len(reviews), self.batch_size):
+                batch = reviews[index : index + self.batch_size]
+                self.usage.total_batches += 1
+                tags.extend(await self.classify_batch(batch, theme_set))
+            return tags, self.usage
 
     @property
     def _dev_mode(self) -> bool:
@@ -151,7 +202,7 @@ class LLMGateway:
             raise RuntimeError("GEMINI_API_KEY is not configured.")
         prompt = json.dumps(payload, ensure_ascii=False)
         last_error = ""
-        for attempt in range(1, 4):
+        for attempt in range(1, 6):
             try:
                 await GLOBAL_BUCKET.wait()
                 self.usage.calls += 1
@@ -161,10 +212,105 @@ class LLMGateway:
             except (httpx.HTTPError, JSONDecodeError, KeyError, ValueError) as exc:
                 last_error = redact_llm_error(exc)
                 self.usage.malformed_retries.append({"attempt": attempt, "reason": last_error})
-                if attempt == 3:
+                if attempt == 5 or not self._should_retry(exc):
                     raise RuntimeError(last_error) from None
-                await asyncio.sleep(attempt * 2)
+                await asyncio.sleep((2 ** (attempt - 1)) + random.uniform(0, 1.5))
         raise RuntimeError(last_error or "LLM call failed")
+
+    def _should_retry(self, exc: Exception) -> bool:
+        if isinstance(exc, httpx.HTTPStatusError):
+            code = exc.response.status_code
+            return code in {429, 500, 502, 503, 504}
+        return isinstance(exc, (httpx.TimeoutException, JSONDecodeError, KeyError, ValueError))
+
+    def _classification_prompt(self, reviews: List[CleanReview], theme_set: ThemeSet) -> Dict[str, Any]:
+        return {
+            "task": "Classify each review. Use only the supplied theme set or 'other'. Return strict JSON.",
+            "severity_scale": {
+                "1": "cosmetic/minor",
+                "2": "blocks a task, workaround exists",
+                "3": "churn, money lost, trust, or safety broken",
+            },
+            "theme_set": theme_set,
+            "reviews": [
+                {"review_hash": r.review_hash, "text": r.text, "rating": r.rating, "source": r.source, "language": r.language}
+                for r in reviews
+            ],
+            "schema": [
+                {
+                    "review_hash": "string",
+                    "language": "en|hi|hinglish|other",
+                    "english_gloss": "string",
+                    "bucket": "complaint|feature_request|praise",
+                    "theme": "theme from set or other",
+                    "severity": "1|2|3",
+                }
+            ],
+        }
+
+    def _generate_request(self, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "request": {
+                "contents": [{"parts": [{"text": prompt}], "role": "user"}],
+                "generationConfig": {"response_mime_type": "application/json"},
+            },
+            "metadata": metadata,
+        }
+
+    async def _create_batch(self, requests: List[Dict[str, Any]], display_name: str) -> Dict[str, Any]:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:batchGenerateContent"
+        headers = {"Content-Type": "application/json", "x-goog-api-key": self.config.gemini_api_key}
+        body = {
+            "batch": {
+                "displayName": display_name,
+                "inputConfig": {"inlinedRequests": {"inlinedRequests": requests}},
+            }
+        }
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(url, headers=headers, json=body)
+            response.raise_for_status()
+            return response.json()
+
+    async def _poll_batch(self, operation_name: str, timeout_seconds: int = 1800) -> List[Dict[str, Any]]:
+        if not operation_name:
+            raise RuntimeError("Batch operation name missing.")
+        url = f"https://generativelanguage.googleapis.com/v1beta/{operation_name}"
+        headers = {"x-goog-api-key": self.config.gemini_api_key}
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        async with httpx.AsyncClient(timeout=60) as client:
+            while asyncio.get_running_loop().time() < deadline:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+                if data.get("done"):
+                    if data.get("error"):
+                        raise RuntimeError(json.dumps(data["error"]))
+                    return self._extract_batch_responses(data)
+                await asyncio.sleep(10)
+        raise RuntimeError("Batch operation timed out.")
+
+    def _extract_batch_responses(self, operation: Dict[str, Any]) -> List[Dict[str, Any]]:
+        candidates = [
+            operation.get("response", {}),
+            operation.get("response", {}).get("batch", {}),
+            operation.get("response", {}).get("batch", {}).get("output", {}),
+        ]
+        for candidate in candidates:
+            inline = candidate.get("output", {}).get("inlinedResponses") if isinstance(candidate.get("output"), dict) else candidate.get("inlinedResponses")
+            if isinstance(inline, dict) and isinstance(inline.get("inlinedResponses"), list):
+                return inline["inlinedResponses"]
+        raise RuntimeError("Batch inline responses missing.")
+
+    def _batch_response_json(self, item: Dict[str, Any]) -> Any:
+        if item.get("error"):
+            raise RuntimeError(json.dumps(item["error"]))
+        response = item.get("response") or {}
+        text = response["candidates"][0]["content"]["parts"][0]["text"]
+        usage = response.get("usageMetadata") or {}
+        self.usage.input_tokens += int(usage.get("promptTokenCount") or 0)
+        self.usage.output_tokens += int(usage.get("candidatesTokenCount") or 0)
+        self.usage.total_tokens += int(usage.get("totalTokenCount") or 0)
+        return json.loads(text)
 
     async def _gemini_call(self, prompt: str) -> Any:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"

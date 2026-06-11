@@ -4,6 +4,7 @@ from typing import Dict, List, Optional
 
 
 SOURCES = ("play", "appstore", "reddit", "maps", "mouthshut")
+DEFAULT_SOURCES = ("play", "appstore", "reddit", "maps")
 BUCKETS = ("complaint", "feature_request", "praise")
 
 
@@ -37,4 +38,3 @@ class Tag:
 
 
 ThemeSet = Dict[str, List[str]]
-

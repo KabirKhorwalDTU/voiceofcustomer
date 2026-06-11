@@ -47,6 +47,8 @@ def create_or_get_company(session: Session, request: SubmitRunRequest) -> Compan
             app_id=resolved.app_id or None,
             domain=resolved.domain or None,
             brand_keyword=resolved.brand_keyword,
+            maps_enabled=request.maps_enabled,
+            maps_location_hint=request.maps_location_hint.strip() or "India",
         )
         session.add(company)
         session.flush()
@@ -56,6 +58,8 @@ def create_or_get_company(session: Session, request: SubmitRunRequest) -> Compan
         company.app_id = company.app_id or resolved.app_id or None
         company.domain = company.domain or resolved.domain or None
         company.brand_keyword = resolved.brand_keyword or company.brand_keyword
+        company.maps_enabled = request.maps_enabled
+        company.maps_location_hint = request.maps_location_hint.strip() or company.maps_location_hint or "India"
     return company
 
 
@@ -93,6 +97,8 @@ def create_run(session: Session, request: SubmitRunRequest) -> Tuple[Run, bool]:
             "app_id": company.app_id,
             "domain": company.domain,
             "brand_keyword": company.brand_keyword,
+            "maps_enabled": company.maps_enabled,
+            "maps_location_hint": company.maps_location_hint,
         },
     )
     return run, False

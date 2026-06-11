@@ -9,9 +9,11 @@ type DraftCompany = {
   play_link: string;
   app_store_link: string;
   website: string;
+  maps_enabled: boolean;
+  maps_location_hint: string;
 };
 
-const emptyDraft = (): DraftCompany => ({ name: "", play_link: "", app_store_link: "", website: "" });
+const emptyDraft = (): DraftCompany => ({ name: "", play_link: "", app_store_link: "", website: "", maps_enabled: false, maps_location_hint: "India" });
 
 export function Dashboard() {
   const [drafts, setDrafts] = useState<DraftCompany[]>([emptyDraft()]);
@@ -94,6 +96,14 @@ export function Dashboard() {
               <label>
                 Website
                 <input value={draft.website} onChange={(event) => updateDraft(index, { website: event.target.value })} placeholder="https://company.com" />
+              </label>
+              <label className="checkbox-label">
+                <input type="checkbox" checked={draft.maps_enabled} onChange={(event) => updateDraft(index, { maps_enabled: event.target.checked })} />
+                Maps
+              </label>
+              <label>
+                Maps location
+                <input value={draft.maps_location_hint} onChange={(event) => updateDraft(index, { maps_location_hint: event.target.value })} placeholder="India" />
               </label>
               <button type="button" className="icon-button row-remove" title="Remove row" onClick={() => setDrafts((items) => {
                 const next = items.filter((_, itemIndex) => itemIndex !== index);

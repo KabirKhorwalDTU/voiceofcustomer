@@ -11,6 +11,8 @@ class SubmitRunRequest(BaseModel):
     play_link: str = ""
     app_store_link: str = ""
     website: str = ""
+    maps_enabled: bool = False
+    maps_location_hint: str = "India"
 
 
 class CompanyOut(BaseModel):
@@ -20,6 +22,8 @@ class CompanyOut(BaseModel):
     app_id: Optional[str] = None
     domain: Optional[str] = None
     brand_keyword: str
+    maps_enabled: bool = False
+    maps_location_hint: str = "India"
     created_at: datetime
 
     model_config = {"from_attributes": True}

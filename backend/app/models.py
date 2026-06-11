@@ -62,6 +62,8 @@ class Company(Base):
     app_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     domain: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     brand_keyword: Mapped[str] = mapped_column(String, nullable=False)
+    maps_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    maps_location_hint: Mapped[str] = mapped_column(String, nullable=False, default="India")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     runs: Mapped[List["Run"]] = relationship(back_populates="company")
@@ -152,9 +154,9 @@ class Settings(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     provider: Mapped[str] = mapped_column(String, nullable=False, default="gemini")
-    model: Mapped[str] = mapped_column(String, nullable=False, default="gemini-2.5-flash")
+    model: Mapped[str] = mapped_column(String, nullable=False, default="gemini-3.1-flash-lite")
     max_reviews: Mapped[int] = mapped_column(Integer, nullable=False, default=3000)
-    batch_size: Mapped[int] = mapped_column(Integer, nullable=False, default=25)
+    batch_size: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     recency_window_days: Mapped[int] = mapped_column(Integer, nullable=False, default=90)
     dedup_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.86)
     per_run_budget_usd: Mapped[float] = mapped_column(Float, nullable=False, default=1)

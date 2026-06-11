@@ -113,13 +113,23 @@ h3 {
 
 .company-row {
   display: grid;
-  grid-template-columns: 1.1fr 1.6fr 1.6fr 1.1fr 42px;
+  grid-template-columns: 1fr 1.4fr 1.4fr 1fr 82px 0.8fr 42px;
   gap: 12px;
   align-items: end;
   padding: 12px;
   background: #f9fafb;
   border: 1px solid #e6e9ef;
   border-radius: 8px;
+}
+
+.checkbox-label {
+  align-content: end;
+  min-height: 64px;
+}
+
+.checkbox-label input {
+  width: 18px;
+  min-height: 18px;
 }
 
 label {
@@ -312,6 +322,16 @@ button:disabled {
 .banner.warning {
   color: #7c2d12;
   background: #ffedd5;
+}
+
+.banner.danger {
+  color: #7f1d1d;
+  background: #fee2e2;
+}
+
+.banner.muted-banner {
+  color: #465163;
+  background: #eef2f7;
 }
 
 .chart-grid {

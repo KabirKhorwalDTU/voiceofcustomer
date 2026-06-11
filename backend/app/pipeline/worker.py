@@ -93,7 +93,7 @@ class Worker:
                             stage="scraping",
                             event="budget_exceeded",
                             status="partial",
-                            provider="apify",
+                            provider=status.get("provider", "ingestion"),
                             cost_usd=float(settings.per_run_budget_usd),
                             details={"error": str(exc)},
                         )
@@ -120,6 +120,7 @@ class Worker:
                             cost_usd=float(attempt.get("cost_usd") or 0),
                             details={
                                 "actor": status.get("actor"),
+                                "library": status.get("library"),
                                 "count": attempt.get("count", 0),
                                 "error": attempt.get("error"),
                             },
@@ -131,13 +132,16 @@ class Worker:
                         event="source_completed",
                         status=status.get("status", "info"),
                         source=source,
-                        provider="apify",
+                        provider=status.get("provider", "ingestion"),
                         cost_usd=float(status.get("cost_usd") or 0),
                         details={
                             "actor": status.get("actor"),
+                            "library": status.get("library"),
                             "attempts": status.get("attempts"),
                             "count": status.get("count"),
                             "error": status.get("error"),
+                            "reason": status.get("reason"),
+                            "places": status.get("places"),
                         },
                     )
                 log_run_event(
@@ -314,6 +318,8 @@ class Worker:
                     total_tokens=usage.total_tokens,
                     details={
                         "calls": usage.calls,
+                        "path": usage.path,
+                        "batch_probe": usage.batch_probe,
                         "total_batches": usage.total_batches,
                         "quarantined_batches": usage.quarantined_batches,
                         "malformed_retries": usage.malformed_retries,
@@ -352,7 +358,7 @@ class Worker:
                     details={"theme_count": len(theme_rows), "representative_quotes": len(top_hashes)},
                 )
 
-                failed_sources = [src for src, status in (run.completeness or {}).items() if status.get("status") not in {"ok"}]
+                failed_sources = [src for src, status in (run.completeness or {}).items() if status.get("status") not in {"ok", "disabled"}]
                 terminal = "partial" if failed_sources or run.status == "partial" else "done"
                 log_run_event(
                     session,

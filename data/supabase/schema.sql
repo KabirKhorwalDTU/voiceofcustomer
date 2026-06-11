@@ -25,6 +25,8 @@ create table if not exists companies (
     app_id text,
     domain text,
     brand_keyword text not null,
+    maps_enabled boolean not null default false,
+    maps_location_hint text not null default 'India',
     created_at timestamptz not null default now()
 );
 
@@ -127,9 +129,9 @@ create index if not exists run_logs_status_idx on run_logs(status);
 create table if not exists settings (
     id integer primary key default 1 check (id = 1),
     provider text not null default 'gemini',
-    model text not null default 'gemini-2.5-flash',
+    model text not null default 'gemini-3.1-flash-lite',
     max_reviews integer not null default 3000,
-    batch_size integer not null default 25,
+    batch_size integer not null default 100,
     recency_window_days integer not null default 90,
     dedup_threshold numeric(5, 4) not null default 0.86,
     per_run_budget_usd numeric(10, 4) not null default 1,

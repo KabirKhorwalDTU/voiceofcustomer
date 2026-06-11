@@ -42,6 +42,7 @@ def required_env_vars() -> List[Dict[str, str]]:
         "DATABASE_URL": env("DATABASE_URL"),
         "APIFY_TOKEN": env("APIFY_TOKEN"),
         "GEMINI_API_KEY": env("GEMINI_API_KEY"),
+        "GOOGLE_MAPS_API_KEY": env("GOOGLE_MAPS_API_KEY", required=False, default=""),
         "DEEPSEEK_API_KEY": env("DEEPSEEK_API_KEY", required=False),
         "PYTHON_VERSION": env("PYTHON_VERSION", required=False, default="3.11.11"),
         "ALLOW_DEV_LLM_FALLBACK": "false",
@@ -74,7 +75,7 @@ def create_payload() -> Dict:
             "region": region,
             "healthCheckPath": "/health",
             "envSpecificDetails": {
-                "buildCommand": "pip install -r requirements.txt",
+                "buildCommand": "pip install -r requirements.txt && npm ci --omit=dev",
                 "startCommand": "uvicorn app.main:app --host 0.0.0.0 --port $PORT",
             },
         },
