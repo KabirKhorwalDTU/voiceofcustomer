@@ -109,6 +109,25 @@ def test_llm_errors_redact_provider_keys():
     assert "key=[redacted]" in redacted
 
 
+def test_gateway_validation_defaults_null_severity():
+    review = CleanReview(
+        source="maps",
+        review_hash="abc",
+        text="Good service",
+        date=date.today(),
+        rating=5,
+        language="en",
+    )
+    gateway = LLMGateway(get_config(), TestSettings())
+    tags = gateway._validate_tags(
+        [{"review_hash": "abc", "language": "en", "english_gloss": "Good service", "bucket": "praise", "theme": "other", "severity": None}],
+        [review],
+        {"complaint": ["other"], "feature_request": ["other"], "praise": ["other"]},
+    )
+
+    assert tags[0].severity == 1
+
+
 def test_gateway_requires_provider_key_when_dev_fallback_disabled():
     async def run():
         text = "Payment failed and money debited"

@@ -225,7 +225,10 @@ class LLMGateway:
             theme = str(item.get("theme") or "other").strip().lower().replace(" ", "_")
             if theme not in theme_set[bucket]:
                 theme = "other"
-            severity = int(item.get("severity", 1))
+            try:
+                severity = int(item.get("severity") or 1)
+            except (TypeError, ValueError):
+                severity = 1
             if severity not in (1, 2, 3):
                 severity = 1
             tags.append(
