@@ -5,25 +5,31 @@
 - Backend host: Render.
 - Render plan: free for v1 because the workspace API rejected the paid starter plan with Payment Required.
 - Backend Python runtime: pinned to Python 3.11.11 for Render because Render's current default Python 3.14 exposed a SQLAlchemy startup incompatibility.
+- Backend database driver: psycopg prepared statements are disabled for Supabase transaction-pooler compatibility.
 - Queue/worker: lightweight Postgres-backed run state with one in-process async worker for v1. Redis/RQ/Celery is deferred until horizontal scaling.
 - Frontend host: Vercel.
 - Database: Supabase managed Postgres, accessed by the backend through `DATABASE_URL`.
 - Visual direction: restrained operator-console SaaS UI because no visual reference or saved Product Design context was available.
 - LLM default: Gemini 2.5 Flash through the gateway. DeepSeek V3 is configurable from settings. A deterministic development fallback is enabled only when provider keys are absent and `ALLOW_DEV_LLM_FALLBACK=true`.
 - Production safety: Render sets `ALLOW_DEV_LLM_FALLBACK=false` and `ALLOW_DEV_INGESTION_FALLBACK=false`; local development can still use deterministic LLM/sample-ingestion fallbacks.
+- Secret hygiene: Apify calls use an `Authorization` header, and source error strings are redacted before persistence.
 
 ## Deployment Status
 
 - Frontend production deployment: https://frontend-eight-sandy-65.vercel.app
-- Latest deployment URL: https://frontend-c1vblmnn8-kabir-khorwals-projects.vercel.app
+- Latest deployment URL: https://frontend-hyzwvfe6m-kabir-khorwals-projects.vercel.app
 - Vercel project: `frontend`.
 - Vercel SSO deployment protection was disabled after the first public check returned HTTP 401; the final public check returned HTTP 200.
+- Frontend `VITE_API_BASE_URL` is configured to the Render backend URL in Vercel production.
 - Supabase project: `Voice of Customer AI Agent` (`ojzgfmyoesgzlajwgorh`) in `ap-south-1`.
 - Supabase URL: `https://ojzgfmyoesgzlajwgorh.supabase.co`.
 - Supabase schema migration `initial_voice_of_customer_schema` was applied and verified. Tables present: `companies`, `runs`, `reviews`, `settings`, `themes`. The singleton settings row is present with Gemini defaults.
 - Backend Render service: `voc-ai-agent-api` at `https://voc-ai-agent-api.onrender.com`.
-- The deployed frontend currently needs `VITE_API_BASE_URL` set to the Render backend URL and a redeploy before it can operate against the cloud backend. Until that is configured, production shows an API configuration error instead of calling localhost.
-- Added `docs/DEPLOYMENT.md`, `.github/workflows/render-backend.yml`, `backend/Dockerfile`, `scripts/create_render_backend.py`, `scripts/cloud_smoke.py`, `scripts/set_vercel_api_url.sh`, `scripts/finalize_cloud_deploy.sh`, and `scripts/check_deployment_readiness.py` so backend deployment finalization can be run and verified as soon as Render access exists.
+- Latest backend commit deployed on Render: `e672694`.
+- Cloud smoke passed against Render + Vercel on run `04ef1b28-d758-49c3-a854-14a10d8ec296`: health, settings, run terminal state, non-wholesale failure, results, CSV, JSON, XLSX, and frontend checks all passed.
+- Smoke run status was `partial` because the smoke target uses fake store IDs and some Apify marketplace actors returned source-level failures; this validates the locked partial-source behavior. Real review ingestion still requires valid store links and Apify marketplace access for the selected actors.
+- Security verification after smoke: returned run/results payload contained no `apify_api_...` token pattern and no `token=` query string.
+- Added `docs/DEPLOYMENT.md`, `.github/workflows/render-backend.yml`, `backend/Dockerfile`, `scripts/create_render_backend.py`, `scripts/cloud_smoke.py`, `scripts/set_vercel_api_url.sh`, `scripts/finalize_cloud_deploy.sh`, and `scripts/check_deployment_readiness.py` for repeatable deployment and verification.
 
 ## Apify Actor Pins
 
