@@ -2,7 +2,8 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from json import JSONDecodeError
+from typing import Any, Dict, List, Tuple, Union
 
 import httpx
 
@@ -43,6 +44,26 @@ class TokenBucket:
 
 
 GLOBAL_BUCKET = TokenBucket(rate_per_minute=15)
+SECRET_PATTERNS = (
+    re.compile(r"key=([^&\\s'\\\"]+)"),
+    re.compile(r"AQ\\.[A-Za-z0-9_-]+"),
+    re.compile(r"Bearer\\s+[A-Za-z0-9._-]+"),
+)
+
+
+def redact_llm_error(value: Union[Exception, str]) -> str:
+    text = str(value)
+    for pattern in SECRET_PATTERNS:
+        text = pattern.sub(_redact_match, text)
+    return text
+
+
+def _redact_match(match: re.Match) -> str:
+    if match.group(0).startswith("key="):
+        return "key=[redacted]"
+    if match.group(0).startswith("Bearer "):
+        return "Bearer [redacted]"
+    return "[redacted]"
 
 
 class LLMGateway:
@@ -121,22 +142,32 @@ class LLMGateway:
             raise RuntimeError("DEEPSEEK_API_KEY is not configured.")
         if self.provider != "deepseek" and not self.config.gemini_api_key:
             raise RuntimeError("GEMINI_API_KEY is not configured.")
-        await GLOBAL_BUCKET.wait()
-        self.usage.calls += 1
         prompt = json.dumps(payload, ensure_ascii=False)
-        if self.provider == "deepseek":
-            return await self._deepseek_call(prompt)
-        return await self._gemini_call(prompt)
+        last_error = ""
+        for attempt in range(1, 4):
+            try:
+                await GLOBAL_BUCKET.wait()
+                self.usage.calls += 1
+                if self.provider == "deepseek":
+                    return await self._deepseek_call(prompt)
+                return await self._gemini_call(prompt)
+            except (httpx.HTTPError, JSONDecodeError, KeyError, ValueError) as exc:
+                last_error = redact_llm_error(exc)
+                self.usage.malformed_retries.append({"attempt": attempt, "reason": last_error})
+                if attempt == 3:
+                    raise RuntimeError(last_error) from None
+                await asyncio.sleep(attempt * 2)
+        raise RuntimeError(last_error or "LLM call failed")
 
     async def _gemini_call(self, prompt: str) -> Any:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
-        params = {"key": self.config.gemini_api_key}
+        headers = {"x-goog-api-key": self.config.gemini_api_key}
         body = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"response_mime_type": "application/json"},
         }
         async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(url, params=params, json=body)
+            response = await client.post(url, headers=headers, json=body)
             response.raise_for_status()
             data = response.json()
         text = data["candidates"][0]["content"]["parts"][0]["text"]

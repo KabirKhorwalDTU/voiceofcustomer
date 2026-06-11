@@ -8,7 +8,7 @@ from app.db import session_scope
 from app.models import Review, Run, Theme
 from app.pipeline.apify import BudgetExceeded, scrape_sources
 from app.pipeline.cleaner import clean_and_dedup
-from app.pipeline.gateway import LLMGateway
+from app.pipeline.gateway import LLMGateway, redact_llm_error
 from app.pipeline.synth import build_theme_rows
 from app.pipeline.types import CleanReview, Tag
 from app.repository import get_settings, log_run_event, prior_tags_by_hash, set_run_status
@@ -373,8 +373,9 @@ class Worker:
             with session_scope() as session:
                 run = session.get(Run, run_id)
                 if run:
-                    log_run_event(session, run, stage="terminal", event="run_failed", status="failed", details={"error": str(exc)})
-                    set_run_status(session, run, "failed", str(exc))
+                    error = redact_llm_error(exc)
+                    log_run_event(session, run, stage="terminal", event="run_failed", status="failed", details={"error": error})
+                    set_run_status(session, run, "failed", error)
 
 
 worker = Worker()

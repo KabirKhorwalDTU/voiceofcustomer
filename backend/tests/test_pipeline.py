@@ -8,6 +8,7 @@ from app.pipeline.apify import redact_error, scrape_sources
 from app.config import get_config
 from app.pipeline.cleaner import clean_and_dedup, review_hash
 from app.pipeline.gateway import LLMGateway
+from app.pipeline.gateway import redact_llm_error
 from app.pipeline.resolver import resolve_links
 from app.pipeline.types import CleanReview, RawReview
 
@@ -97,6 +98,15 @@ def test_apify_errors_redact_tokens():
 
     assert "apify_api_secret123" not in redacted
     assert "token=[redacted]" in redacted
+
+
+def test_llm_errors_redact_provider_keys():
+    error = "Server error for url 'https://generativelanguage.googleapis.com/v1beta/models/x:generateContent?key=AQ.secret123'"
+
+    redacted = redact_llm_error(error)
+
+    assert "AQ.secret123" not in redacted
+    assert "key=[redacted]" in redacted
 
 
 def test_gateway_requires_provider_key_when_dev_fallback_disabled():
