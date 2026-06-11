@@ -1,6 +1,7 @@
 import asyncio
+import re
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import httpx
 
@@ -17,6 +18,10 @@ ACTORS: Dict[str, Dict[str, str]] = {
 }
 
 APIFY_RESULT_COST_PER_1000 = 0.10
+SECRET_PATTERNS = (
+    re.compile(r"token=([^&\\s'\\\"]+)"),
+    re.compile(r"apify_api_[A-Za-z0-9_-]+"),
+)
 
 
 class BudgetExceeded(Exception):
@@ -33,6 +38,19 @@ def source_cap(source: str, max_reviews: int) -> int:
 
 def estimate_cost(count: int) -> float:
     return round((count / 1000) * APIFY_RESULT_COST_PER_1000, 4)
+
+
+def redact_error(value: Union[Exception, str]) -> str:
+    text = str(value)
+    for pattern in SECRET_PATTERNS:
+        text = pattern.sub(_redact_match, text)
+    return text
+
+
+def _redact_match(match: re.Match) -> str:
+    if match.group(0).startswith("token="):
+        return "token=[redacted]"
+    return "[redacted]"
 
 
 def _parse_date(value: Any) -> Optional[date]:
@@ -95,10 +113,11 @@ def build_actor_input(source: str, company: Any, max_reviews: int) -> Dict[str, 
 async def run_actor(source: str, company: Any, max_reviews: int, config: AppConfig) -> List[RawReview]:
     actor_id = ACTORS[source]["id"].replace("/", "~")
     run_url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items"
-    params = {"token": config.apify_token, "timeout": 180, "memory": 1024}
+    params = {"timeout": 180, "memory": 1024}
+    headers = {"Authorization": f"Bearer {config.apify_token}"}
     payload = build_actor_input(source, company, max_reviews)
     async with httpx.AsyncClient(timeout=240) as client:
-        response = await client.post(run_url, params=params, json=payload)
+        response = await client.post(run_url, params=params, headers=headers, json=payload)
         response.raise_for_status()
         items = response.json()
     normalized = [review for item in items if (review := normalize_item(source, item))]
@@ -161,7 +180,7 @@ async def scrape_sources(company: Any, settings: Any, config: AppConfig, current
                 items = await run_actor(source, company, settings.max_reviews, config)
                 return source, items, {"status": "ok", "attempts": attempt, "actor": ACTORS[source], "count": len(items)}
             except Exception as exc:
-                last_error = str(exc)
+                last_error = redact_error(exc)
                 await asyncio.sleep(attempt * 2)
         return source, [], {"status": "failed", "attempts": 3, "actor": ACTORS[source], "error": last_error, "count": 0}
 

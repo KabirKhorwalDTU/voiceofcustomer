@@ -4,7 +4,7 @@ from datetime import date
 import pytest
 
 from app.config import AppConfig
-from app.pipeline.apify import scrape_sources
+from app.pipeline.apify import redact_error, scrape_sources
 from app.config import get_config
 from app.pipeline.cleaner import clean_and_dedup, review_hash
 from app.pipeline.gateway import LLMGateway
@@ -84,6 +84,19 @@ def test_scraper_does_not_use_dev_samples_when_production_fallback_disabled():
         assert all("APIFY_TOKEN" in status["error"] for status in completeness.values())
 
     asyncio.run(run())
+
+
+def test_apify_errors_redact_tokens():
+    error = (
+        "Client error for url "
+        "'https://api.apify.com/v2/acts/example/run-sync-get-dataset-items?"
+        "token=apify_api_secret123&timeout=180'"
+    )
+
+    redacted = redact_error(error)
+
+    assert "apify_api_secret123" not in redacted
+    assert "token=[redacted]" in redacted
 
 
 def test_gateway_requires_provider_key_when_dev_fallback_disabled():
