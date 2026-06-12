@@ -21,8 +21,8 @@ The cost problem is not Gemini Batch. The cost problem is un-gated paid ingestio
 | Gemini tier | Paid Tier 1 / prepaid | Reliable Batch usage, higher limits, production privacy posture |
 | Gemini execution | Batch-only | Roughly 50% of sync token price |
 | Sync fallback | Off for production | Prevents duplicate Batch + sync billing |
-| Play Store | OSS primary | No paid ingestion cost |
-| App Store | OSS primary | No paid ingestion cost |
+| Play Store | OSS primary, paid Apify fallback disabled | No paid ingestion cost and no surprise fallback spend |
+| App Store | OSS primary, paid Apify fallback disabled | No paid ingestion cost and no surprise fallback spend |
 | Reddit | Gated opt-in | High cost and variable relevance |
 | Google Maps reviews | Opt-in for physical/service brands | Cheap per review, useful for service failures |
 | MouthShut | Disabled | Low reliability / niche source |
@@ -96,13 +96,15 @@ Your Google Cloud screenshot showed:
 |---|---:|---:|---:|---:|---:|
 | Places API (New) | 61 | 6 | 136 ms | 260 ms | `$0` |
 
-Why cost is `$0`:
+Why cost is `$0` in the screenshot:
 
-- At this usage level, Places discovery is inside Google Maps free monthly usage.
-- IDs-only Text Search is free at any volume.
-- Text Search Pro has a monthly free cap before paid billing.
+- At this usage level, Places discovery is inside Google Maps free monthly usage / credits.
+- The current field mask includes `displayName`, `formattedAddress`, `rating`, and `userRatingCount` for entity resolution and audit logs.
+- That is not pure IDs-only usage. Official field pricing marks `id` / `name` as Text Search Essentials (IDs Only), `displayName` / `formattedAddress` as Text Search Pro, and `rating` / `userRatingCount` as Text Search Enterprise.
+- So Google Places remains low-risk at 100 companies, but it is not literally free forever if volume climbs above the free monthly allowance.
 
 Source: https://developers.google.com/maps/billing-and-pricing/pricing
+Field tiers: https://developers.google.com/maps/documentation/places/web-service/data-fields
 
 ## 4. Live Runs: Company Unit Economics
 
@@ -286,11 +288,11 @@ This is the default promise for app-first analysis.
 
 | Source | Volume | Cost assumption |
 |---|---:|---:|
-| Play Store | Up to 2,000 cleaned rows | `$0 ingestion` |
-| App Store | Up to 500 cleaned rows | `$0 ingestion` |
+| Play Store | OSS, newest-first | `$0 ingestion` |
+| App Store | OSS, newest-first | `$0 ingestion` |
 | Reddit | Off | `$0` |
 | Maps | Off | `$0` |
-| Gemini Batch | ~2,500 cleaned rows | `~$0.26` |
+| Gemini Batch | ~2,500 cleaned rows combined | `~$0.26` |
 
 | Metric | Estimate |
 |---|---:|
@@ -305,8 +307,8 @@ This is my recommended production default when source gates are implemented.
 
 | Source | Volume | Cost assumption |
 |---|---:|---:|
-| Play Store | Up to 3,000 cleaned rows | `$0 ingestion` |
-| App Store | Up to 500 cleaned rows | `$0 ingestion` |
+| Play Store | OSS, newest-first | `$0 ingestion` |
+| App Store | OSS, newest-first | `$0 ingestion` |
 | Reddit | 30-50 relevant rows | `$0.08 - $0.12` |
 | Maps | 100-250 rows for service brands | `$0.06 - $0.15` |
 | Gemini Batch | ~3,000-3,500 cleaned rows | `$0.31 - $0.36` |
@@ -387,6 +389,10 @@ The actual average Gemini Batch cost from live runs is about `$0.193 / company`.
 | Batch poll window increased to 8 hours | Done |
 | Gemini cost tracked from input/output tokens | Done |
 | Apify cost estimator updated to actor event pricing | Done |
+| Paid Play/App Store Apify fallback disabled by default | Done |
+| App Store OSS pagination tied to `max_reviews` instead of defaulting to ~500 | Done |
+| Google Maps place matching accepts brand-prefixed location names | Done |
+| Google Maps discovery collects all matching place IDs across queries | Done |
 
 ## 11. Required Next Product Improvements
 
@@ -429,3 +435,409 @@ Conservative max budget: $20 total
 ```
 
 That is not "cheap mode"; it is high-output, cost-disciplined mode. The goal is to spend money where it changes the insight, not where a source happens to return rows.
+
+## 13. INR 5,000 / 100-Company Budget Test
+
+Your stated operating budget:
+
+```text
+INR 5,000 / 100 companies = INR 50 per company
+```
+
+Planning assumptions:
+
+| Variable | Value |
+|---|---:|
+| USD-INR planning rate | 83 |
+| GST / tax buffer | 18% |
+| Target all-in cost before tax | `<= INR 42.37` |
+| Target all-in cost after tax | `<= INR 50.00` |
+
+Observed corrected live-run average:
+
+| Metric | Value |
+|---|---:|
+| Average USD / company | `$0.4345` |
+| Average INR / company before tax | `INR 36.06` |
+| Average INR / company with 18% buffer | `INR 42.55` |
+| 100-company cost before tax | `INR 3,606` |
+| 100-company cost with 18% buffer | `INR 4,255` |
+
+Conclusion: the current Batch-only system fits the INR 5,000 / 100-company budget, but only narrowly if Reddit and Maps are allowed to run without gates. The budget is safe for Tier A and disciplined Tier B. It is not safe for maximum Maps + Reddit on every company.
+
+### Budget Stress Test
+
+| Scenario | Per-company USD | Per-company INR before tax | Per-company INR with 18% buffer | 100-company INR with buffer | Budget fit |
+|---|---:|---:|---:|---:|---|
+| Store-only, ~2,500 cleaned rows | `$0.26` | `INR 21.58` | `INR 25.46` | `INR 2,546` | Safe |
+| Live average: stores + Reddit 100 + selective Maps | `$0.4345` | `INR 36.06` | `INR 42.55` | `INR 4,255` | Safe but watch |
+| Stores + Reddit 100 for every company | `$0.48 - $0.60` | `INR 40 - 50` | `INR 47 - 59` | `INR 4,700 - 5,900` | Risky |
+| Stores + Reddit 100 + Maps 250 for every company | `$0.63 - $0.85` | `INR 52 - 71` | `INR 62 - 83` | `INR 6,200 - 8,300` | Not safe |
+| Deep dive: 6,000 cleaned rows + Reddit 100 + Maps 1,000 | `$1.40 - $2.00` | `INR 116 - 166` | `INR 137 - 196` | `INR 13,700 - 19,600` | Not for bulk |
+
+Operating rule:
+
+| Run type | Hard cap |
+|---|---:|
+| Bulk outreach / 100 companies | `INR 45 - 50/company` |
+| Serious shortlisted research | `INR 75/company` |
+| Deep dive / one-off PM case study | `INR 150 - 200/company` |
+
+## 14. What Creates Gemini Tokens
+
+Gemini is billed on tokens, not API calls. A token is a chunk of text in the prompt or response. In this platform, both the instructions and every review row become tokens.
+
+### Input Token Sources
+
+| Input component | Why it exists | Cost behavior |
+|---|---|---|
+| System/task instructions | Tells Gemini to classify VoC rows and obey schema | Repeated in every batch |
+| Bucket definitions | Complaint / feature_request / praise | Repeated in every batch |
+| Severity rubric | Defines severity 1/2/3 | Repeated in every batch |
+| Frozen theme set | Forces assignment to company-specific themes | Repeated in every classification batch |
+| Review rows | `review_hash`, source, rating, date, text | Scales with review count and review length |
+| JSON schema instructions | Keeps parseable output | Repeated in every batch |
+| Theme discovery sample | Up to ~300 reviews | One-time per run |
+
+### Output Token Sources
+
+| Output component | Why output is high |
+|---|---|
+| `review_hash` | Returned for every review so tags map back exactly |
+| `language` | Returned for every review |
+| `english_gloss` | Biggest driver: every Hindi/Hinglish/English review gets a gloss/summary |
+| `bucket` | Returned for every review |
+| `theme` | Returned for every review; long theme names multiply cost |
+| `severity` | Returned for every review |
+| JSON keys and punctuation | Repeated for every object in every batch |
+
+Output tokens are expensive because Gemini Flash-Lite Batch output is `$0.75 / 1M`, while Batch input is `$0.125 / 1M`. Output is 6x the input unit price. That is why compacting output matters more than compacting the prompt.
+
+### Live Token Shape
+
+| Company | Input tokens | Output tokens | Output share | Cost implication |
+|---|---:|---:|---:|---|
+| Pronto | 288,146 | 184,555 | 39.0% | Output is 79% of Gemini bill |
+| Paytm | 272,390 | 231,780 | 46.0% | Output is 84% of Gemini bill |
+| Snabbit | 281,467 | 217,074 | 43.5% | Output is 82% of Gemini bill |
+
+Formula example for Snabbit:
+
+```text
+Input cost  = 281,467 / 1,000,000 * $0.125 = $0.0352
+Output cost = 217,074 / 1,000,000 * $0.75  = $0.1628
+Total       = $0.1980
+```
+
+### Why "900 API requests" Does Not Equal the App Cost
+
+The Google AI Studio usage dashboard counts provider-level requests across all tests, probes, Batch operations, evals, and reruns. The platform run cost is computed from per-run token usage recorded in the database. A single Batch run can contain many internal generation requests, and Google may count those separately in usage dashboards.
+
+For cost governance, trust this order:
+
+| Source of truth | Use it for |
+|---|---|
+| `runs.cost_estimate` | User-facing per-run total |
+| `runs.completeness.*.cost_usd` | Per-source ingestion cost |
+| Gemini run logs token counts | Per-run LLM cost |
+| Google AI Studio global usage | Account-level reconciliation, not per-company attribution |
+
+## 15. What We Send And What We Receive
+
+### Theme Discovery Input
+
+One Batch request contains a prompt that is structurally like:
+
+```json
+{
+  "task": "Discover customer review themes",
+  "buckets": ["complaint", "feature_request", "praise"],
+  "rules": {
+    "max_themes_per_bucket": 10,
+    "language": "Hindi/Hinglish/English allowed",
+    "output": "strict JSON"
+  },
+  "sample_reviews": [
+    {
+      "review_hash": "abc123",
+      "source": "play",
+      "rating": 1,
+      "date": "2026-06-11",
+      "text": "Paise debit ho gaye but service nahi mila"
+    }
+  ]
+}
+```
+
+### Theme Discovery Output
+
+```json
+{
+  "complaint": [
+    "payment_failures",
+    "poor_customer_support",
+    "refund_delays",
+    "other"
+  ],
+  "feature_request": [
+    "better_slot_availability",
+    "faster_refunds",
+    "other"
+  ],
+  "praise": [
+    "fast_service",
+    "easy_booking",
+    "other"
+  ]
+}
+```
+
+### Classification Input
+
+Each internal Batch request classifies about 100 reviews:
+
+```json
+{
+  "task": "Classify each review into the frozen theme set",
+  "severity_scale": {
+    "1": "cosmetic/minor",
+    "2": "blocks a task, workaround exists",
+    "3": "churn, money lost, trust or safety broken"
+  },
+  "theme_set": {
+    "complaint": ["payment_failures", "poor_customer_support", "other"],
+    "feature_request": ["faster_refunds", "other"],
+    "praise": ["easy_booking", "other"]
+  },
+  "reviews": [
+    {
+      "review_hash": "abc123",
+      "source": "play",
+      "rating": 1,
+      "date": "2026-06-11",
+      "text": "Paise debit ho gaye but service nahi mila"
+    }
+  ],
+  "required_output_fields": [
+    "review_hash",
+    "language",
+    "english_gloss",
+    "bucket",
+    "theme",
+    "severity"
+  ]
+}
+```
+
+### Classification Output
+
+```json
+[
+  {
+    "review_hash": "abc123",
+    "language": "hinglish",
+    "english_gloss": "Money was debited but the service was not delivered.",
+    "bucket": "complaint",
+    "theme": "payment_failures",
+    "severity": 3
+  }
+]
+```
+
+This output shape is the main reason output tokens are high. Every cleaned review receives a full JSON object.
+
+### Gemini Batch API Wrapper
+
+The platform wraps those prompts in Google's Batch request shape:
+
+```json
+{
+  "batch": {
+    "displayName": "voc-classify-<run_id>",
+    "inputConfig": {
+      "requests": {
+        "requests": [
+          {
+            "request": {
+              "contents": [
+                { "parts": [{ "text": "<classification prompt>" }] }
+              ],
+              "generationConfig": { "responseMimeType": "application/json" }
+            },
+            "metadata": { "key": "batch-0" }
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+The response is parsed from `response.inlinedResponses[].response` and then each JSON row is validated before it is inserted into `reviews`.
+
+## 16. Store Fallback And Store Volume Policy
+
+### Paid Fallback Decision
+
+| Question | Answer |
+|---|---|
+| Should Google Play/App Store paid Apify fallback remain active? | No |
+| Should we delete the fallback code entirely? | No |
+| Final implementation | Disabled seam via `ENABLE_PAID_STORE_FALLBACK = False` |
+
+Reason: Play and App Store ingestion should be free by default. If OSS fails, the run should mark that source failed/partial rather than silently spend on Apify. The code path remains available for a future explicit "paid rescue mode".
+
+### Why App Store Was Around 500 Rows
+
+The App Store OSS scraper paginates in pages of 50. It previously defaulted to 10 pages:
+
+```text
+10 pages * 50 rows = ~500 rows
+```
+
+That was an implementation cap, not a business rule. It is now fixed so the page limit follows `max_reviews`.
+
+### Why Play Store Was Around 1,500-2,000 Rows
+
+Play Store is requested in both Hindi and English:
+
+```text
+max_reviews = 3,000
+per language request ~= 1,500
+languages = hi + en
+merge + dedup
+```
+
+Actual cleaned rows can be lower because:
+
+| Cause | Effect |
+|---|---|
+| Store/library returns fewer rows than requested | Less raw volume |
+| `hi` and `en` overlap | Dedup lowers final count |
+| Very short/empty rows removed | Cleaner lowers final count |
+| Near-duplicate reviews removed | Cleaner lowers final count |
+
+### Should We Pull More Since OSS Is Free?
+
+Ingestion is free. Classification is not. At the observed average:
+
+```text
+1,000 additional cleaned reviews ~= $0.104 Gemini Batch ~= INR 8.63 before tax
+```
+
+So more store rows are cheap, but not free. The correct policy is:
+
+| Tier | Store cap | Why |
+|---|---:|---|
+| Bulk / 100 companies | 2,500-3,000 cleaned rows total target | Fits INR 50/company |
+| Serious company run | 3,000-5,000 cleaned rows total target | Better theme stability |
+| Deep dive | Up to 6,000 cleaned rows | Use when quality matters more than budget |
+
+Recommendation: keep the configured `max_reviews = 3,000` for now. Do not raise it globally until Reddit and Maps are gated, because the budget headroom is already being consumed by paid sources.
+
+## 17. Google Reviews Execution: Why Snabbit Was Low
+
+The low Snabbit Maps count was not because Google Maps had only 19 reviews. It was a place-resolution guardrail bug.
+
+### What Happened
+
+| Place found by Places API | Review count shown by Places/Maps | Old matcher result | Why |
+|---|---:|---|---|
+| `Snabbit` | 19 | Accepted | Exact normalized name match |
+| `Snabbit Kadubeesanahalli Training Centre` | 114 | Rejected | Extra location words broke exact match |
+| `Snabbit Office training centre Mumbai` | 169 | Would be rejected unless queried and substring-allowed | Extra words |
+| `Snabbit Training Centre - Goregaon` | 19 | Would be rejected unless queried and substring-allowed | Extra words |
+
+The old code accepted only exact normalized matches like:
+
+```text
+snabbit == snabbit
+```
+
+It rejected:
+
+```text
+snabbitkadubeesanahallitrainingcentre contains snabbit
+```
+
+### What Changed
+
+| Change | Effect |
+|---|---|
+| Place matcher now accepts brand substring matches | `Snabbit Kadubeesanahalli Training Centre` is accepted |
+| Discovery now collects all matching places across queries | Multiple Snabbit place IDs can be scraped |
+| Guardrail still rejects generic non-brand matches | Avoids scraping wrong `Pronto` / unrelated locations |
+
+### Maps Cost From First Principles
+
+Apify Maps actor cost from billing screenshot:
+
+```text
+Maps cost = $0.00005 actor start + $0.0006 * scraped_reviews
+```
+
+| Maps reviews scraped | Maps Apify cost | INR before tax |
+|---:|---:|---:|
+| 19 | `$0.0114` | `INR 0.95` |
+| 86 | `$0.0516` | `INR 4.28` |
+| 114 | `$0.0685` | `INR 5.69` |
+| 250 | `$0.1501` | `INR 12.46` |
+| 1,000 | `$0.6001` | `INR 49.81` |
+
+This is the core Maps tradeoff: 100-250 Maps reviews are affordable and often high-signal. 1,000 Maps reviews alone can consume the full INR 50/company budget before Gemini or Reddit.
+
+### Recommended Maps Policy
+
+| Company type | Maps setting | Cap |
+|---|---|---:|
+| Pure app / fintech wallet | Off | 0 |
+| Service marketplace with physical/training/service centers | On | 100-250 |
+| Deep dive on a service brand | On | 1,000 |
+
+For Snabbit specifically: Maps should be on, but default cap should be 250 unless we are intentionally doing a deep service-quality audit.
+
+## 18. Secret Safety Check
+
+Question: if someone opens GitHub, can they access the API keys?
+
+Current repo scan result:
+
+| Check | Result |
+|---|---|
+| Tracked `.env` files | None |
+| Env example files | Present, placeholders only |
+| Real Apify / Google / GitHub / Render / Supabase tokens in tracked files | Not found |
+| Token-like matches | Only redaction regexes and fake test fixtures |
+| Runtime secrets location | Render/Vercel/Supabase env, not Git |
+
+So: GitHub users should not be able to access the live API keys from the repository. The keys were exposed in chat earlier, so operationally they should still be rotated, but they are not committed to Git.
+
+## 19. Lowest-Cost High-Output Recommendation
+
+For the next 100 companies, use this exact policy:
+
+| Lever | Setting |
+|---|---|
+| Gemini | `gemini-3.1-flash-lite`, Batch-only |
+| Sync fallback | Off |
+| Play Store | OSS on |
+| App Store | OSS on |
+| Paid Play/App Store fallback | Off |
+| Reddit | Off by default; enable only after relevance gate |
+| Maps | Off by default; enable for service brands at 100-250 cap |
+| Max reviews | 3,000 per store source |
+| Per-company budget cap | `$0.55` hard cap for bulk |
+
+Expected 100-company budget under this policy:
+
+| Cost bucket | 100-company expected cost |
+|---|---:|
+| Gemini Batch | `$25 - $35` |
+| Reddit gated | `$0 - $8` |
+| Maps gated | `$0 - $10` |
+| Google Places discovery | Usually `$0` at this volume, due free allowance/credits |
+| Total USD | `$30 - $50` |
+| Total INR before tax | `INR 2,490 - 4,150` |
+| Total INR with 18% buffer | `INR 2,938 - 4,897` |
+
+This fits the INR 5,000 / 100-company target while preserving the core output quality.

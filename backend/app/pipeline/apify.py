@@ -19,6 +19,7 @@ ACTORS: Dict[str, Dict[str, str]] = {
     "mouthshut": {"id": "getdataforme/mouthshut-reviews-scraper", "version": "disabled-by-default"},
 }
 
+ENABLE_PAID_STORE_FALLBACK = False
 APIFY_EVENT_PRICING: Dict[str, Dict[str, float]] = {
     "play": {"actor_start": 0.0, "per_result": 0.00015},
     "appstore": {"actor_start": 0.0, "per_result": 0.00010},
@@ -229,10 +230,14 @@ def place_matches_company(place: Dict[str, Any], company: Any) -> bool:
     normalized_keyword = re.sub(r"[^a-z0-9]+", "", keyword)
     if normalized_keyword and normalized_name == normalized_keyword:
         return True
+    if normalized_keyword and normalized_keyword in normalized_name:
+        return True
     if domain:
         domain_token = domain.split(".")[0]
         normalized_domain = re.sub(r"[^a-z0-9]+", "", domain_token)
         if normalized_domain and normalized_name == normalized_domain:
+            return True
+        if normalized_domain and normalized_domain in normalized_name:
             return True
     return False
 
@@ -251,6 +256,8 @@ async def discover_places(company: Any, config: AppConfig) -> Tuple[List[str], L
         "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount",
     }
     all_places: List[Dict[str, Any]] = []
+    matched_places: List[Dict[str, Any]] = []
+    seen_place_ids: set[str] = set()
     attempted_queries: List[str] = []
     async with httpx.AsyncClient(timeout=30) as client:
         for query in queries:
@@ -263,8 +270,12 @@ async def discover_places(company: Any, config: AppConfig) -> Tuple[List[str], L
             all_places.extend(places)
             matched = [place for place in places if place_matches_company(place, company)]
             if matched:
-                return [place["id"] for place in matched if place.get("id")], matched, attempted_queries
-    return [], all_places, attempted_queries
+                for place in matched:
+                    place_id = place.get("id")
+                    if place_id and place_id not in seen_place_ids:
+                        seen_place_ids.add(place_id)
+                        matched_places.append(place)
+    return [place["id"] for place in matched_places if place.get("id")], matched_places or all_places, attempted_queries
 
 
 def dev_reviews(company: Any, max_reviews: int) -> List[RawReview]:
@@ -318,6 +329,16 @@ async def scrape_sources(company: Any, settings: Any, config: AppConfig, current
                 attempt_details.append({"attempt": attempt, "status": "failed", "provider": "oss", "error": redact_error(exc)})
                 await asyncio.sleep(attempt * 2)
 
+        if not ENABLE_PAID_STORE_FALLBACK:
+            return source, [], {
+                "status": "failed",
+                "provider": "oss",
+                "attempts": 3,
+                "count": 0,
+                "cost_usd": 0,
+                "attempt_details": attempt_details,
+                "error": "OSS scraper failed. Paid Apify store fallback is disabled for cost control.",
+            }
         if not config.apify_token:
             return source, [], {"status": "failed", "provider": "oss", "attempts": 3, "count": 0, "cost_usd": 0, "attempt_details": attempt_details, "error": "OSS scraper failed and APIFY_TOKEN is not configured."}
 

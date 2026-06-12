@@ -4,7 +4,7 @@ from datetime import date
 import pytest
 
 from app.config import AppConfig
-from app.pipeline.apify import build_actor_input, estimate_cost, redact_error, scrape_sources
+from app.pipeline.apify import build_actor_input, estimate_cost, place_matches_company, redact_error, scrape_sources
 from app.config import get_config
 from app.pipeline.cleaner import clean_and_dedup, review_hash
 from app.pipeline.gateway import LLMGateway
@@ -76,6 +76,12 @@ def test_reddit_actor_input_uses_verified_search_schema():
     assert payload["maxPostsCount"] == 100
     assert payload["maxCommentsPerPost"] == 0
     assert payload["proxy"] == {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"]}
+
+
+def test_places_match_brand_prefixed_location_names():
+    place = {"displayName": {"text": "Snabbit Kadubeesanahalli Training Centre"}}
+
+    assert place_matches_company(place, type("Company", (), {"brand_keyword": "snabbit", "name": "Snabbit", "domain": "snabbit.com"}))
 
 
 def test_apify_cost_estimates_use_actor_event_pricing():
@@ -232,6 +238,31 @@ def test_scraper_cost_only_counts_explicit_paid_source_costs(monkeypatch):
         assert completeness["appstore"]["cost_usd"] == 0
         assert completeness["reddit"]["provider"] == "apify"
         assert cost == 0.04
+
+    asyncio.run(run())
+
+
+def test_store_scraper_does_not_use_paid_apify_fallback(monkeypatch):
+    async def fail_oss(_source, _company, _max_reviews):
+        raise RuntimeError("OSS unavailable")
+
+    async def actor_reviews(source, _company, _max_reviews, _config, place_ids=None):
+        if source in {"play", "appstore"}:
+            raise AssertionError("paid store fallback should stay disabled")
+        return []
+
+    async def run():
+        monkeypatch.setattr("app.pipeline.apify.run_oss_store_scraper", fail_oss)
+        monkeypatch.setattr("app.pipeline.apify.run_actor", actor_reviews)
+        config = AppConfig(apify_token="test-token", allow_dev_ingestion_fallback=False)
+        _reviews, completeness, _counts, cost = await scrape_sources(TestCompany(), TestSettings(), config)
+
+        assert completeness["play"]["provider"] == "oss"
+        assert completeness["play"]["status"] == "failed"
+        assert "Paid Apify store fallback is disabled" in completeness["play"]["error"]
+        assert completeness["appstore"]["provider"] == "oss"
+        assert completeness["appstore"]["status"] == "failed"
+        assert cost == 0
 
     asyncio.run(run())
 
