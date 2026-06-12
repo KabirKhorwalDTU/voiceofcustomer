@@ -8,7 +8,7 @@ from app.db import session_scope
 from app.models import Review, Run, Theme
 from app.pipeline.apify import BudgetExceeded, scrape_sources
 from app.pipeline.cleaner import clean_and_dedup
-from app.pipeline.gateway import LLMGateway, redact_llm_error
+from app.pipeline.gateway import BATCH_POLL_TIMEOUT_SECONDS, LLMGateway, redact_llm_error
 from app.pipeline.synth import build_theme_rows
 from app.pipeline.types import CleanReview, Tag
 from app.repository import get_settings, log_run_event, prior_tags_by_hash, set_run_status
@@ -302,7 +302,10 @@ class Worker:
                     model=settings.model,
                     details={"new_reviews": len(new_reviews), "batch_size": settings.batch_size},
                 )
-            classification_timeout = max(3600, ((len(new_reviews) + int(settings.batch_size) - 1) // int(settings.batch_size)) * 120)
+            if settings.provider == "gemini":
+                classification_timeout = BATCH_POLL_TIMEOUT_SECONDS + 600
+            else:
+                classification_timeout = max(3600, ((len(new_reviews) + int(settings.batch_size) - 1) // int(settings.batch_size)) * 120)
             try:
                 tags, usage = await asyncio.wait_for(gateway.classify_all(new_reviews, theme_set), timeout=classification_timeout)
             except asyncio.TimeoutError:

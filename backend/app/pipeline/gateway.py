@@ -97,6 +97,7 @@ GEMINI_PRICING_PER_MILLION = {
         "batch": {"input": 0.125, "output": 0.75},
     }
 }
+BATCH_POLL_TIMEOUT_SECONDS = 8 * 60 * 60
 
 
 class LLMGateway:
@@ -124,7 +125,10 @@ class LLMGateway:
             "schema": {"complaint": ["theme"], "feature_request": ["theme"], "praise": ["theme"]},
         }
         try:
-            data = await self._json_call(prompt)
+            if self.provider == "gemini":
+                data = await self._json_call_batch(prompt, "voc-theme-discovery", {"key": "theme-discovery"})
+            else:
+                data = await self._json_call(prompt)
         except RuntimeError as exc:
             if "API_KEY is not configured" in str(exc):
                 raise
@@ -171,7 +175,7 @@ class LLMGateway:
         return []
 
     async def classify_all(self, reviews: List[CleanReview], theme_set: ThemeSet) -> Tuple[List[Tag], LLMUsage]:
-        if reviews and self.provider == "gemini" and not self._dev_mode and await self._batch_available():
+        if reviews and self.provider == "gemini" and not self._dev_mode:
             return await self._classify_all_batch(reviews, theme_set)
         tags: List[Tag] = []
         chunks = [reviews[index : index + self.batch_size] for index in range(0, len(reviews), self.batch_size)]
@@ -190,69 +194,38 @@ class LLMGateway:
             )
         return tags, self.usage
 
-    async def _batch_available(self) -> bool:
-        self.usage.path = "sync"
-        prompt = json.dumps({"task": "Return strict JSON.", "schema": {"ok": True}}, ensure_ascii=False)
-        try:
-            operation = await self._create_batch([self._generate_request(prompt, {"probe": True})], "voc-batch-probe")
-            self.usage.batch_probe = {"status": "created", "operation": operation.get("name")}
-            self.usage.path = "batch"
-            return True
-        except Exception as exc:
-            self.usage.batch_probe = {"status": "sync_fallback", "reason": redact_llm_error(exc)}
-            self.usage.path = "sync"
-            return False
-
     async def _classify_all_batch(self, reviews: List[CleanReview], theme_set: ThemeSet) -> Tuple[List[Tag], LLMUsage]:
+        self.usage.path = "batch"
         chunks = [reviews[index : index + self.batch_size] for index in range(0, len(reviews), self.batch_size)]
         requests = []
         for index, batch in enumerate(chunks):
             prompt = self._classification_prompt(batch, theme_set)
             requests.append(self._generate_request(json.dumps(prompt, ensure_ascii=False), {"key": f"batch-{index}", "batch_index": index}))
-        try:
-            await self._emit_progress("batch_submit_started", total_batches=len(chunks), requests=len(requests))
-            operation = await self._create_batch(requests, "voc-classification")
-            self.usage.batch_probe = {
-                **self.usage.batch_probe,
-                "classification_operation": operation.get("name"),
-                "classification_timeout_seconds": 300,
-            }
-            await self._emit_progress("batch_submit_completed", operation=operation.get("name"), total_batches=len(chunks))
-            responses = await self._poll_batch(operation.get("name", ""), timeout_seconds=300)
-            tags: List[Tag] = []
-            self.usage.total_batches = len(chunks)
-            for index, batch in enumerate(chunks):
-                await self._emit_progress("batch_response_parse_started", batch_index=index, total_batches=len(chunks), batch_size=len(batch))
-                try:
-                    data = self._batch_response_json(responses[index])
-                    tags.extend(self._validate_tags(data, batch, theme_set))
-                    await self._emit_progress("batch_response_parse_completed", batch_index=index, total_batches=len(chunks), batch_size=len(batch), quarantined=False)
-                except Exception as exc:
-                    self.usage.quarantined_batches += 1
-                    self.usage.malformed_retries.append({"attempt": f"batch_{index}", "reason": redact_llm_error(exc)})
-                    tags.extend(self._heuristic_tag(review, theme_set, quarantine=True) for review in batch)
-                    await self._emit_progress("batch_response_parse_completed", batch_index=index, total_batches=len(chunks), batch_size=len(batch), quarantined=True, error=redact_llm_error(exc))
-            self.usage.path = "batch"
-            return tags, self.usage
-        except Exception as exc:
-            self.usage.batch_probe = {**self.usage.batch_probe, "classification_fallback": redact_llm_error(exc)}
-            self.usage.path = "sync"
-            await self._emit_progress("batch_classification_fallback", error=redact_llm_error(exc), total_batches=len(chunks))
-            tags: List[Tag] = []
-            for batch_index, batch in enumerate(chunks):
-                await self._emit_progress("sync_batch_started", batch_index=batch_index, total_batches=len(chunks), batch_size=len(batch))
-                self.usage.total_batches += 1
-                before_quarantine = self.usage.quarantined_batches
-                tags.extend(await self.classify_batch(batch, theme_set))
-                await self._emit_progress(
-                    "sync_batch_completed",
-                    batch_index=batch_index,
-                    total_batches=len(chunks),
-                    batch_size=len(batch),
-                    quarantined=self.usage.quarantined_batches > before_quarantine,
-                    calls=self.usage.calls,
-                )
-            return tags, self.usage
+        await self._emit_progress("batch_submit_started", total_batches=len(chunks), requests=len(requests))
+        operation = await self._create_batch(requests, "voc-classification")
+        self.usage.batch_probe = {
+            **self.usage.batch_probe,
+            "classification_operation": operation.get("name"),
+            "classification_timeout_seconds": BATCH_POLL_TIMEOUT_SECONDS,
+            "sync_fallback": False,
+        }
+        await self._emit_progress("batch_submit_completed", operation=operation.get("name"), total_batches=len(chunks))
+        responses = await self._poll_batch(operation.get("name", ""), timeout_seconds=BATCH_POLL_TIMEOUT_SECONDS)
+        tags: List[Tag] = []
+        self.usage.total_batches = len(chunks)
+        for index, batch in enumerate(chunks):
+            await self._emit_progress("batch_response_parse_started", batch_index=index, total_batches=len(chunks), batch_size=len(batch))
+            try:
+                data = self._batch_response_json(responses[index])
+                tags.extend(self._validate_tags(data, batch, theme_set))
+                await self._emit_progress("batch_response_parse_completed", batch_index=index, total_batches=len(chunks), batch_size=len(batch), quarantined=False)
+            except Exception as exc:
+                self.usage.quarantined_batches += 1
+                self.usage.malformed_retries.append({"attempt": f"batch_{index}", "reason": redact_llm_error(exc)})
+                tags.extend(self._heuristic_tag(review, theme_set, quarantine=True) for review in batch)
+                await self._emit_progress("batch_response_parse_completed", batch_index=index, total_batches=len(chunks), batch_size=len(batch), quarantined=True, error=redact_llm_error(exc))
+        self.usage.path = "batch"
+        return tags, self.usage
 
     @property
     def _dev_mode(self) -> bool:
@@ -281,6 +254,18 @@ class LLMGateway:
                     raise RuntimeError(last_error) from None
                 await asyncio.sleep((2 ** (attempt - 1)) + random.uniform(0, 1.5))
         raise RuntimeError(last_error or "LLM call failed")
+
+    async def _json_call_batch(self, payload: Dict[str, Any], display_name: str, metadata: Dict[str, Any]) -> Any:
+        if not self.config.gemini_api_key:
+            raise RuntimeError("GEMINI_API_KEY is not configured.")
+        prompt = json.dumps(payload, ensure_ascii=False)
+        await self._emit_progress("batch_json_submit_started", display_name=display_name)
+        operation = await self._create_batch([self._generate_request(prompt, metadata)], display_name)
+        await self._emit_progress("batch_json_submit_completed", display_name=display_name, operation=operation.get("name"))
+        responses = await self._poll_batch(operation.get("name", ""), timeout_seconds=BATCH_POLL_TIMEOUT_SECONDS)
+        if not responses:
+            raise RuntimeError("Batch JSON response missing.")
+        return self._batch_response_json(responses[0])
 
     def _should_retry(self, exc: Exception) -> bool:
         if isinstance(exc, httpx.HTTPStatusError):

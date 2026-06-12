@@ -109,6 +109,56 @@ def test_gemini_batch_cost_uses_half_price_token_pricing():
     assert gateway.usage.cost_usd == 1.345
 
 
+def test_gemini_theme_discovery_uses_batch_path():
+    async def run():
+        review = CleanReview(source="play", review_hash="abc", text="Great app", date=date.today(), rating=5, language="en")
+        gateway = LLMGateway(AppConfig(gemini_api_key="test", allow_dev_llm_fallback=False), TestSettings())
+        called = {"batch": False}
+
+        async def batch_call(_payload, _display_name, _metadata):
+            called["batch"] = True
+            return {"complaint": ["login issues"], "feature_request": ["dark mode"], "praise": ["easy to use"]}
+
+        async def sync_call(_payload):
+            raise AssertionError("theme discovery should not call Gemini sync")
+
+        gateway._json_call_batch = batch_call
+        gateway._json_call = sync_call
+        themes = await gateway.discover_themes([review])
+
+        assert called["batch"] is True
+        assert themes["praise"] == ["easy_to_use", "other"]
+
+    asyncio.run(run())
+
+
+def test_gemini_batch_timeout_does_not_sync_fallback():
+    async def run():
+        review = CleanReview(source="play", review_hash="abc", text="Payment failed", date=date.today(), rating=1, language="en")
+        gateway = LLMGateway(AppConfig(gemini_api_key="test", allow_dev_llm_fallback=False), TestSettings())
+
+        async def create_batch(_requests, _display_name):
+            return {"name": "batches/test"}
+
+        async def poll_batch(_operation_name, timeout_seconds=0):
+            raise RuntimeError("Batch operation timed out.")
+
+        async def sync_classify(_reviews, _theme_set):
+            raise AssertionError("classification should not call Gemini sync fallback")
+
+        gateway._create_batch = create_batch
+        gateway._poll_batch = poll_batch
+        gateway.classify_batch = sync_classify
+
+        with pytest.raises(RuntimeError, match="Batch operation timed out"):
+            await gateway.classify_all([review], {"complaint": ["other"], "feature_request": ["other"], "praise": ["other"]})
+
+        assert gateway.usage.path == "batch"
+        assert gateway.usage.batch_probe["sync_fallback"] is False
+
+    asyncio.run(run())
+
+
 def test_gateway_dev_classifier_handles_hinglish():
     async def run():
         text = "Paise debit ho gaye but payment nahi mila"
@@ -232,10 +282,10 @@ def test_gateway_quarantines_theme_discovery_provider_failure():
         )
         gateway = LLMGateway(AppConfig(gemini_api_key="test", allow_dev_llm_fallback=False), TestSettings())
 
-        async def fail(_payload):
+        async def fail(_payload, _display_name, _metadata):
             raise RuntimeError("provider unavailable")
 
-        gateway._json_call = fail
+        gateway._json_call_batch = fail
         themes = await gateway.discover_themes([review])
 
         assert "payments_or_refunds" in themes["complaint"]
