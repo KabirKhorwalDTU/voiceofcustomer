@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import math
 from typing import List
 
@@ -15,6 +17,7 @@ from app.schemas import ResultsOut, ReviewPageOut, RunLogOut, RunOut, SettingsOu
 
 app = FastAPI(title="Voice of Customer AI Agent", version="1.0.0")
 config = get_config()
+logger = logging.getLogger(__name__)
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,18 +30,39 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup() -> None:
-    init_db()
-    worker.start()
+    app.state.bootstrap_ready = False
+    app.state.bootstrap_error = ""
+    app.state.bootstrap_task = asyncio.create_task(bootstrap_backend())
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    task = getattr(app.state, "bootstrap_task", None)
+    if task and not task.done():
+        task.cancel()
     await worker.stop()
 
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True}
+    return {"ok": True, "bootstrap_ready": bool(getattr(app.state, "bootstrap_ready", False))}
+
+
+async def bootstrap_backend() -> None:
+    for attempt in range(1, 13):
+        try:
+            await asyncio.to_thread(init_db)
+            worker.start()
+            app.state.bootstrap_ready = True
+            app.state.bootstrap_error = ""
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            app.state.bootstrap_error = exc.__class__.__name__
+            logger.warning("Backend bootstrap attempt %s failed with %s", attempt, exc.__class__.__name__)
+            await asyncio.sleep(min(30, attempt * 5))
+    logger.error("Backend bootstrap failed after all retry attempts.")
 
 
 @app.post("/api/runs", response_model=SubmitRunResponse)
