@@ -4,7 +4,7 @@ from datetime import date
 import pytest
 
 from app.config import AppConfig
-from app.pipeline.apify import build_actor_input, redact_error, scrape_sources
+from app.pipeline.apify import build_actor_input, estimate_cost, redact_error, scrape_sources
 from app.config import get_config
 from app.pipeline.cleaner import clean_and_dedup, review_hash
 from app.pipeline.gateway import LLMGateway
@@ -76,6 +76,13 @@ def test_reddit_actor_input_uses_verified_search_schema():
     assert payload["maxPostsCount"] == 100
     assert payload["maxCommentsPerPost"] == 0
     assert payload["proxy"] == {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"]}
+
+
+def test_apify_cost_estimates_use_actor_event_pricing():
+    assert estimate_cost("reddit", 100) == 0.22
+    assert estimate_cost("maps", 86) == 0.0516
+    assert estimate_cost("play", 500) == 0.075
+    assert estimate_cost("appstore", 10) == 0.001
 
 
 def test_gemini_batch_request_shape_matches_docs():
@@ -224,7 +231,7 @@ def test_scraper_cost_only_counts_explicit_paid_source_costs(monkeypatch):
         assert completeness["appstore"]["provider"] == "oss"
         assert completeness["appstore"]["cost_usd"] == 0
         assert completeness["reddit"]["provider"] == "apify"
-        assert cost == 0.001
+        assert cost == 0.04
 
     asyncio.run(run())
 

@@ -19,7 +19,13 @@ ACTORS: Dict[str, Dict[str, str]] = {
     "mouthshut": {"id": "getdataforme/mouthshut-reviews-scraper", "version": "disabled-by-default"},
 }
 
-APIFY_RESULT_COST_PER_1000 = 0.10
+APIFY_EVENT_PRICING: Dict[str, Dict[str, float]] = {
+    "play": {"actor_start": 0.0, "per_result": 0.00015},
+    "appstore": {"actor_start": 0.0, "per_result": 0.00010},
+    "reddit": {"actor_start": 0.02, "per_result": 0.00200},
+    "maps": {"actor_start": 0.00005, "per_result": 0.00060},
+    "mouthshut": {"actor_start": 0.0, "per_result": 0.0},
+}
 SECRET_PATTERNS = (
     re.compile(r"token=([^&\\s'\\\"]+)"),
     re.compile(r"key=([^&\\s'\\\"]+)"),
@@ -42,8 +48,11 @@ def source_cap(source: str, max_reviews: int) -> int:
     return max_reviews
 
 
-def estimate_cost(count: int) -> float:
-    return round((count / 1000) * APIFY_RESULT_COST_PER_1000, 4)
+def estimate_cost(source: str, count: int) -> float:
+    pricing = APIFY_EVENT_PRICING.get(source, {"actor_start": 0.0, "per_result": 0.00010})
+    if count <= 0:
+        return 0
+    return round(pricing["actor_start"] + (count * pricing["per_result"]), 4)
 
 
 def redact_error(value: Union[Exception, str]) -> str:
@@ -316,7 +325,7 @@ async def scrape_sources(company: Any, settings: Any, config: AppConfig, current
         for attempt in range(1, 4):
             try:
                 items = await run_actor(source, company, settings.max_reviews, config)
-                cost_usd = estimate_cost(len(items))
+                cost_usd = estimate_cost(source, len(items))
                 attempt_details.append({"attempt": attempt, "status": "ok", "provider": "apify", "count": len(items), "cost_usd": cost_usd})
                 return source, items, {"status": "ok", "provider": "apify", "actor": ACTORS[source], "attempts": attempt, "count": len(items), "cost_usd": cost_usd, "attempt_details": attempt_details}
             except Exception as exc:
@@ -349,7 +358,7 @@ async def scrape_sources(company: Any, settings: Any, config: AppConfig, current
         for attempt in range(1, 4):
             try:
                 items = await run_actor(source, company, settings.max_reviews, config, place_ids=place_ids)
-                cost_usd = estimate_cost(len(items))
+                cost_usd = estimate_cost(source, len(items))
                 attempt_details.append({"attempt": attempt, "status": "ok", "provider": "apify", "count": len(items), "cost_usd": cost_usd})
                 status = {"status": "ok", "provider": "apify", "actor": ACTORS[source], "attempts": attempt, "count": len(items), "cost_usd": cost_usd, "attempt_details": attempt_details, "places": places, "placeQueries": place_queries}
                 if source == "reddit":
