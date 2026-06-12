@@ -32,6 +32,12 @@ def stratified_sample(reviews: List[CleanReview], limit: int = 300) -> List[Clea
     return sample
 
 
+def is_analysis_candidate(review: CleanReview) -> bool:
+    if review.source == "reddit":
+        return True
+    return review.rating in {1, 2, 3}
+
+
 class Worker:
     def __init__(self) -> None:
         self._task: Optional[asyncio.Task] = None
@@ -93,7 +99,7 @@ class Worker:
                             stage="scraping",
                             event="budget_exceeded",
                             status="partial",
-                            provider=status.get("provider", "ingestion"),
+                            provider="ingestion",
                             cost_usd=float(settings.per_run_budget_usd),
                             details={"error": str(exc)},
                         )
@@ -157,7 +163,13 @@ class Worker:
                     details={"source_counts": source_counts, "raw_reviews": len(raw_reviews)},
                 )
 
-            cleaned, dedup_ratio = clean_and_dedup(raw_reviews, float(settings.dedup_threshold))
+            cleaned_all, dedup_ratio = clean_and_dedup(raw_reviews, float(settings.dedup_threshold))
+            cleaned = [review for review in cleaned_all if is_analysis_candidate(review)]
+            selected_source_counts: Dict[str, int] = {}
+            for review in cleaned:
+                selected_source_counts[review.source] = selected_source_counts.get(review.source, 0) + 1
+            for source in source_counts:
+                selected_source_counts.setdefault(source, 0)
             hashes = [review.review_hash for review in cleaned]
             with session_scope() as session:
                 run = session.get(Run, run_id)
@@ -171,7 +183,12 @@ class Worker:
                     status="ok",
                     details={
                         "raw_reviews": len(raw_reviews),
+                        "cleaned_before_rating_filter": len(cleaned_all),
                         "cleaned_reviews": len(cleaned),
+                        "selected_reviews": len(cleaned),
+                        "selection_rule": "rating_1_2_3_for_rated_sources_plus_reddit_when_enabled",
+                        "raw_source_counts": source_counts,
+                        "selected_source_counts": selected_source_counts,
                         "dedup_ratio": dedup_ratio,
                         "dedup_threshold": float(settings.dedup_threshold),
                     },
@@ -183,7 +200,7 @@ class Worker:
                     if run is None:
                         return
                     run.completeness = completeness
-                    run.source_counts = source_counts
+                    run.source_counts = selected_source_counts
                     run.cost_estimate = cost
                     run.dedup_ratio = dedup_ratio
                     run.quarantine_rate = 0
@@ -193,9 +210,9 @@ class Worker:
                         stage="terminal",
                         event="run_completed",
                         status="partial",
-                        details={"reason": "No reviews were ingested; source completeness contains per-source details."},
+                        details={"reason": "No 1/2/3-star analysis reviews were selected; source completeness contains per-source details."},
                     )
-                    set_run_status(session, run, "partial", "No reviews were ingested; source completeness contains per-source details.")
+                    set_run_status(session, run, "partial", "No 1/2/3-star analysis reviews were selected; source completeness contains per-source details.")
                 return
 
             with session_scope() as session:
@@ -203,7 +220,7 @@ class Worker:
                 if run is None:
                     return
                 run.completeness = completeness
-                run.source_counts = source_counts
+                run.source_counts = selected_source_counts
                 run.cost_estimate = cost
                 run.dedup_ratio = dedup_ratio
                 set_run_status(session, run, "classifying")

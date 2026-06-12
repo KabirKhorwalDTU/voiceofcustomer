@@ -13,6 +13,7 @@ class SubmitRunRequest(BaseModel):
     website: str = ""
     maps_enabled: bool = False
     maps_location_hint: str = "India"
+    reddit_enabled: bool = False
 
 
 class CompanyOut(BaseModel):
@@ -24,6 +25,7 @@ class CompanyOut(BaseModel):
     brand_keyword: str
     maps_enabled: bool = False
     maps_location_hint: str = "India"
+    reddit_enabled: bool = False
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -45,6 +47,9 @@ class RunOut(BaseModel):
     error: Optional[str] = None
     created_at: datetime
     company: Optional[CompanyOut] = None
+    current_stage: str = "Queued"
+    stage_detail: str = ""
+    progress: float = 0
 
     model_config = {"from_attributes": True}
 
@@ -69,6 +74,14 @@ class ReviewOut(BaseModel):
     representative_flag: bool
 
     model_config = {"from_attributes": True}
+
+
+class ReviewPageOut(BaseModel):
+    items: List[ReviewOut]
+    total: int
+    page: int
+    page_size: int
+    pages: int
 
 
 class ThemeOut(BaseModel):

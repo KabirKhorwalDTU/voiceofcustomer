@@ -31,10 +31,10 @@ class CleanReview:
 class Tag:
     review_hash: str
     language: str
-    english_gloss: str
+    english_gloss: Optional[str]
     bucket: str
     theme: str
-    severity: int
+    severity: Optional[int] = None
 
 
 ThemeSet = Dict[str, List[str]]

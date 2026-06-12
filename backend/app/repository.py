@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import and_, desc, or_, select
+from sqlalchemy import and_, cast, desc, func, or_, select, String
 from sqlalchemy.orm import Session, joinedload
 
 from app.models import Company, Review, Run, RunLog, Settings, Theme
@@ -49,6 +49,7 @@ def create_or_get_company(session: Session, request: SubmitRunRequest) -> Compan
             brand_keyword=resolved.brand_keyword,
             maps_enabled=request.maps_enabled,
             maps_location_hint=request.maps_location_hint.strip() or "India",
+            reddit_enabled=request.reddit_enabled,
         )
         session.add(company)
         session.flush()
@@ -60,6 +61,7 @@ def create_or_get_company(session: Session, request: SubmitRunRequest) -> Compan
         company.brand_keyword = resolved.brand_keyword or company.brand_keyword
         company.maps_enabled = request.maps_enabled
         company.maps_location_hint = request.maps_location_hint.strip() or company.maps_location_hint or "India"
+        company.reddit_enabled = request.reddit_enabled
     return company
 
 
@@ -99,12 +101,13 @@ def create_run(session: Session, request: SubmitRunRequest) -> Tuple[Run, bool]:
             "brand_keyword": company.brand_keyword,
             "maps_enabled": company.maps_enabled,
             "maps_location_hint": company.maps_location_hint,
+            "reddit_enabled": company.reddit_enabled,
         },
     )
     return run, False
 
 
-def list_runs(session: Session, limit: int = 50) -> List[Run]:
+def list_runs(session: Session, limit: int = 250) -> List[Run]:
     return list(
         session.execute(
             select(Run).options(joinedload(Run.company)).order_by(desc(Run.created_at)).limit(limit)
@@ -124,6 +127,58 @@ def get_run_results(session: Session, run_id: str) -> Tuple[Run, Company, List[R
     reviews = list(session.execute(select(Review).where(Review.run_id == run_id).order_by(desc(Review.date))).scalars())
     themes = list(session.execute(select(Theme).where(Theme.run_id == run_id).order_by(Theme.rank)).scalars())
     return run, company, reviews, themes
+
+
+def query_run_reviews(
+    session: Session,
+    run_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    source: str = "",
+    bucket: str = "",
+    theme: str = "",
+    rating: str = "",
+    q: str = "",
+) -> Tuple[List[Review], int]:
+    page = max(page, 1)
+    page_size = max(1, min(page_size, 100))
+    filters = [Review.run_id == run_id]
+    if source:
+        filters.append(Review.source == source)
+    if bucket:
+        filters.append(Review.bucket == bucket)
+    if theme:
+        filters.append(Review.theme == theme)
+    if rating:
+        try:
+            filters.append(Review.rating == int(rating))
+        except ValueError:
+            filters.append(cast(Review.rating, String).ilike(f"%{rating}%"))
+    if q:
+        like = f"%{q}%"
+        filters.append(
+            or_(
+                Review.review_hash.ilike(like),
+                cast(Review.source, String).ilike(like),
+                cast(Review.date, String).ilike(like),
+                cast(Review.rating, String).ilike(like),
+                Review.text.ilike(like),
+                Review.language.ilike(like),
+                cast(Review.bucket, String).ilike(like),
+                Review.theme.ilike(like),
+            )
+        )
+    total = int(session.execute(select(func.count()).select_from(Review).where(*filters)).scalar_one())
+    rows = list(
+        session.execute(
+            select(Review)
+            .where(*filters)
+            .order_by(desc(Review.date), Review.id)
+            .limit(page_size)
+            .offset((page - 1) * page_size)
+        ).scalars()
+    )
+    return rows, total
 
 
 def get_company_runs(session: Session, company_id: str) -> List[Run]:
@@ -158,7 +213,6 @@ def prior_tags_by_hash(session: Session, company_id: str, hashes: List[str]) -> 
             Review.review_hash.in_(hashes),
             Review.bucket.is_not(None),
             Review.theme.is_not(None),
-            Review.severity.is_not(None),
             Run.quarantine_rate < 0.2,
         )
         .order_by(desc(Review.created_at))
@@ -206,5 +260,14 @@ def log_run_event(
     return row
 
 
-def get_run_logs(session: Session, run_id: str) -> List[RunLog]:
-    return list(session.execute(select(RunLog).where(RunLog.run_id == run_id).order_by(RunLog.created_at)).scalars())
+def get_run_logs(session: Session, run_id: str, limit: Optional[int] = None) -> List[RunLog]:
+    statement = select(RunLog).where(RunLog.run_id == run_id).order_by(RunLog.created_at)
+    if limit:
+        statement = statement.limit(limit)
+    return list(session.execute(statement).scalars())
+
+
+def get_latest_run_log(session: Session, run_id: str) -> Optional[RunLog]:
+    return session.execute(
+        select(RunLog).where(RunLog.run_id == run_id).order_by(desc(RunLog.created_at)).limit(1)
+    ).scalars().first()

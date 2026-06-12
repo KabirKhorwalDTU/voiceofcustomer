@@ -310,7 +310,7 @@ This is my recommended production default when source gates are implemented.
 | Play Store | OSS, newest-first | `$0 ingestion` |
 | App Store | OSS, newest-first | `$0 ingestion` |
 | Reddit | 30-50 relevant rows | `$0.08 - $0.12` |
-| Maps | 100-250 rows for service brands | `$0.06 - $0.15` |
+| Maps | 100 rows by default for service brands; 250 only as stretch | `$0.06 default, up to $0.15 stretch` |
 | Gemini Batch | ~3,000-3,500 cleaned rows | `$0.31 - $0.36` |
 
 | Metric | Estimate |
@@ -390,7 +390,7 @@ The actual average Gemini Batch cost from live runs is about `$0.193 / company`.
 | Gemini cost tracked from input/output tokens | Done |
 | Apify cost estimator updated to actor event pricing | Done |
 | Paid Play/App Store Apify fallback disabled by default | Done |
-| App Store OSS pagination tied to `max_reviews` instead of defaulting to ~500 | Done |
+| App Store OSS pagination above ~500 | Not available with current library; official `app-store-scraper` caps reviews at page 10 |
 | Google Maps place matching accepts brand-prefixed location names | Done |
 | Google Maps discovery collects all matching place IDs across queries | Done |
 
@@ -425,7 +425,7 @@ Run the platform as Tier B for serious overnight work:
 | App Store | Always on via OSS |
 | Gemini | Paid Batch-only |
 | Reddit | Gated opt-in, 30-50 relevant posts |
-| Maps | Opt-in for services, 100-250 reviews |
+| Maps | Opt-in for services, default 100 reviews |
 
 For 10 companies in 8 hours, plan for:
 
@@ -695,7 +695,7 @@ The App Store OSS scraper paginates in pages of 50. It previously defaulted to 1
 10 pages * 50 rows = ~500 rows
 ```
 
-That was an implementation cap, not a business rule. It is now fixed so the page limit follows `max_reviews`.
+This is now understood as a library cap, not just an implementation cap. The current `app-store-scraper` library exposes `page` with a documented maximum of `10`; with about 50 rows per page, practical App Store volume is about 500 reviews per country/run unless we switch libraries or use another source.
 
 ### Why Play Store Was Around 1,500-2,000 Rows
 
@@ -791,10 +791,10 @@ This is the core Maps tradeoff: 100-250 Maps reviews are affordable and often hi
 | Company type | Maps setting | Cap |
 |---|---|---:|
 | Pure app / fintech wallet | Off | 0 |
-| Service marketplace with physical/training/service centers | On | 100-250 |
+| Service marketplace with physical/training/service centers | On | 100 |
 | Deep dive on a service brand | On | 1,000 |
 
-For Snabbit specifically: Maps should be on, but default cap should be 250 unless we are intentionally doing a deep service-quality audit.
+For Snabbit specifically: Maps should be on, but default cap should be 100 unless we are intentionally doing a deep service-quality audit.
 
 ## 18. Secret Safety Check
 
@@ -824,8 +824,8 @@ For the next 100 companies, use this exact policy:
 | App Store | OSS on |
 | Paid Play/App Store fallback | Off |
 | Reddit | Off by default; enable only after relevance gate |
-| Maps | Off by default; enable for service brands at 100-250 cap |
-| Max reviews | 3,000 per store source |
+| Maps | Off by default; enable for service brands at 100 cap |
+| Max reviews | Play Store targeted up to 5,000 low-rated rows when available; App Store ~500 with current OSS library |
 | Per-company budget cap | `$0.55` hard cap for bulk |
 
 Expected 100-company budget under this policy:
@@ -841,3 +841,337 @@ Expected 100-company budget under this policy:
 | Total INR with 18% buffer | `INR 2,938 - 4,897` |
 
 This fits the INR 5,000 / 100-company target while preserving the core output quality.
+
+## 20. Latest Operating Model: Low-Rated Store Core
+
+This section updates the recommendation after the latest cost-model discussion. It does not require code to be changed immediately; it is the next implementation target.
+
+### Source Policy
+
+| Source | New policy | Reason |
+|---|---|---|
+| Play Store | Primary source. Pull `hi` and `en`; prioritize 1/2/3-star reviews; classify up to ~5,000 selected rows when available | Low-rated reviews are the highest-density complaint source and ingestion is free |
+| App Store | Keep OSS, accept practical ~500-row cap | Current library documents page max `10`; this is enough because App Store rows are longer and complaint-heavy |
+| Google Maps | Opt-in for service/physical brands; cap total scraped reviews to 100 | At current account pricing this is about INR 6/company and often high-signal |
+| Reddit | Off by default; gated opt-in | Current cost is high relative to noisy relevance |
+| MouthShut | Disabled seam | Reliability and relevance are not worth default cost |
+| Gemini | Batch-only, no sync fallback | Predictable, cheap, fits overnight jobs |
+
+### Store Max-Review Probe
+
+These were store-only probes: no Gemini, no Apify, no database job.
+
+| Company | Play ID | Play returned at cap 10,000 | Play 1-star | Play 2-star | Play 3-star | Play 1-3 total | App Store returned at cap 500 | App Store 1-3 total |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Paytm | `net.one97.paytm` | 10,000 | 846 | 135 | 254 | 1,235 | 500 | 411 |
+| Swiggy | `in.swiggy.android` | 7,956 | 1,804 | 194 | 334 | 2,332 | 500 | 447 |
+| Pronto | `com.company.pronto` | 5,311 | 297 | 23 | 10 | 330 | 458 | 221 |
+| Snabbit | `com.snabbit.customer` | 5,017 | 1,336 | 117 | 102 | 1,555 | 500 | 344 |
+
+Implication: 5,000 low-rated Play reviews is the target, not a guaranteed floor. Large apps may need deeper fetching to reach it; newer or very positive apps may not have 5,000 written 1-3-star reviews available. The right rule is:
+
+```text
+Fetch Play reviews in hi + en.
+Keep rating <= 3 first.
+Stop when selected low-rated rows reach 5,000 or the source is exhausted.
+Optionally add a small praise sample from 4/5-star rows if the deck needs praise coverage.
+```
+
+### Can We Filter Play Store By Rating Or Language?
+
+| Filter | Supported by current OSS library? | Recommended handling |
+|---|---|---|
+| Language | Yes: `lang`, e.g. `hi` and `en` | Keep both and merge/dedup |
+| Country | Yes: `country`, e.g. `in` | Keep India |
+| Sort | Yes: `NEWEST`, `RATING`, `HELPFULNESS` | Use `NEWEST` for freshness; test `RATING` as a low-rated enrichment path |
+| Exact star filter | No explicit documented parameter | Fetch then local-filter `rating <= 3` |
+
+Rating is not a Gemini problem. It should be used before Gemini to select the rows worth spending tokens on.
+
+### Can We Filter Google Maps By Rating?
+
+The selected Apify Maps actor supports place IDs, `maxReviews`, language/origin, and review sorting. It does not expose an exact "only 1/2/3 stars" filter in the input schema. It does expose review sorting; for complaint mining we should use `lowestRanking` when available, cap the scrape to 100, then local-filter by rating.
+
+Implementation target:
+
+```json
+{
+  "placeIds": ["<accepted_place_id>"],
+  "maxReviews": 100,
+  "reviewsSort": "lowestRanking",
+  "language": "en",
+  "reviewsOrigin": "google"
+}
+```
+
+Important: if multiple place IDs are used, enforce a global 100-review company cap after merging, because actor semantics may behave per place.
+
+## 21. Minimal Gemini Contract
+
+The LLM does not need `source`, `date`, or full `review_hash` to dedupe. Dedup happens before Gemini using the stored hash. Gemini only needs enough information to classify a row and enough identifier to map the answer back.
+
+### Recommended Theme Discovery Input
+
+Use a 300-review sample, but keep each row compact.
+
+```json
+{
+  "task": "discover_themes",
+  "buckets": ["complaint", "feature_request", "praise"],
+  "max_themes_per_bucket": 10,
+  "reviews": [
+    [1, 1, "Paise debit ho gaye but service nahi mila"]
+  ],
+  "row_format": "[row_id, rating, text]",
+  "output": {
+    "complaint": ["theme"],
+    "feature_request": ["theme"],
+    "praise": ["theme"]
+  }
+}
+```
+
+### Recommended Classification Input
+
+```json
+{
+  "task": "classify_reviews",
+  "theme_set": {
+    "complaint": ["payment_failures", "refund_delays", "other"],
+    "feature_request": ["slot_availability", "other"],
+    "praise": ["fast_service", "other"]
+  },
+  "reviews": [
+    [1, 1, "Paise debit ho gaye but service nahi mila"]
+  ],
+  "row_format": "[row_id, rating, text]",
+  "output_format": "[row_id, bucket, theme]"
+}
+```
+
+`row_id` is a short per-batch or per-run integer. The backend maps `row_id -> review_hash` after the response. This is cheaper than sending and receiving a 64-character hash for every review.
+
+### Recommended Classification Output
+
+```json
+[
+  [1, "complaint", "payment_failures"]
+]
+```
+
+### Field Decisions
+
+| Field | Keep in LLM input? | Keep in LLM output? | Reason |
+|---|---|---|---|
+| `row_id` | Yes | Yes | Cheap mapping key |
+| `review_hash` | No | No | Store server-side; long and repeated |
+| `text` | Yes | No | The classification evidence |
+| `rating` | Yes, as one digit | No | Very cheap and helps bucket/praise separation |
+| `source` | No | No | Source scoring is computed outside Gemini |
+| `date` | No | No | Recency scoring is computed outside Gemini |
+| `language` | No | No | Not needed for scoring; infer later only if required |
+| `english_gloss` | No | No per row | Generate only for top representative quotes if the deck needs it |
+| `severity` | No | No | Remove if the product no longer values severity-weighted scoring |
+
+### What Severity Was Doing
+
+Severity was useful for one reason: it made ranking more problem-priority aware.
+
+```text
+old theme_score = normalized_frequency * avg_severity * recency_weight
+```
+
+If we remove severity, scoring becomes simpler:
+
+```text
+new theme_score = normalized_frequency * recency_weight
+```
+
+That is acceptable if the goal is "what themes show up most often" rather than "what themes are most damaging." My recommendation: remove severity for the bulk product, but keep the database column for backward compatibility and set it to `null` or `1` until a future priority model is needed.
+
+### What English Gloss Was Doing
+
+English gloss made Hindi/Hinglish reviews readable in the English UI and deck-spec. It is valuable, but expensive when generated for every row.
+
+Better policy:
+
+| Stage | Gloss policy |
+|---|---|
+| Bulk classification | No per-row gloss |
+| Theme ranking | No gloss needed |
+| Representative quotes | Generate gloss only for top 3 quotes per top theme |
+| Deck-spec | Show original + gloss only for selected quotes |
+
+This keeps deck quality without paying for thousands of unnecessary translations.
+
+## 22. Token Model After Prompt Slimming
+
+Planning rates:
+
+```text
+Gemini Batch input  = INR 12.5 / 1M tokens
+Gemini Batch output = INR 75.0 / 1M tokens
+Assumption          = 1 USD = INR 100 for spreadsheet planning
+```
+
+The current live runs averaged about:
+
+```text
+input  ~= 153 tokens / cleaned review
+output ~= 113 tokens / cleaned review
+total  ~= 266 tokens / cleaned review
+```
+
+For a 5,000-review run:
+
+| Prompt contract | Input tokens | Output tokens | Total tokens | Gemini cost at INR 100/USD | Notes |
+|---|---:|---:|---:|---:|---|
+| Current rich contract | ~763,000 | ~567,000 | ~1,330,000 | ~INR 52 | Includes language, gloss, severity, full JSON keys |
+| Slim, full hash returned | ~634,000 | ~192,000 | ~826,000 | ~INR 22 | Drops gloss/language/severity but still repeats full hashes |
+| Slim, row-id arrays | ~560,000 | ~115,000 | ~675,000 | ~INR 16 | Recommended |
+| Slim, row-id arrays + rating | ~575,000 | ~115,000 | ~690,000 | ~INR 16.8 | My preferred balance |
+
+Rating barely changes cost because it is one digit. Gloss and full hashes are the real token spend.
+
+### 100-Company Budget With New Contract
+
+| Scenario | Gemini | Maps | Reddit | Expected INR/company | 100-company fit |
+|---|---:|---:|---:|---:|---|
+| Store-only, 5,000 rows, slim row-id | ~16-18 | 0 | 0 | ~16-18 | Very safe |
+| Service brand, store + 100 Maps | ~16-18 | ~6 | 0 | ~22-24 | Very safe |
+| Store + 100 Reddit | ~16-18 | 0 | ~22 | ~38-40 | Safe but relevance-gated |
+| Store + 100 Maps + 100 Reddit | ~16-18 | ~6 | ~22 | ~44-46 | Barely safe before tax; not default |
+| Current rich contract + Maps + Reddit | ~52 | ~6 | ~22 | ~80 | Not safe for INR 5,000 / 100 |
+
+Recommendation for the INR 5,000 / 100-company goal:
+
+```text
+Default: Play low-rated + App Store + Gemini slim row-id output.
+Maps: on only for service brands, cap 100.
+Reddit: off unless explicitly toggled or relevance-gated.
+```
+
+## 23. Overnight Execution Model
+
+The current worker already processes companies one at a time: it picks the next queued run, finishes it, then moves to the next. Within a company, sources are scraped concurrently.
+
+That is a good default for the overnight workflow. Ten companies do not need cross-company parallelism yet.
+
+| Layer | Current behavior | Recommendation |
+|---|---|---|
+| Backend worker | One company at a time | Keep as default |
+| Source scraping inside a company | Parallel | Keep, but add optional source concurrency limit if Apify throttles |
+| Gemini | Batch-only async jobs | Keep |
+| Frontend | Polls run status | Improve state visibility |
+| Supabase | Append-only reviews | Fine for 100 companies |
+| Results API | Returns full run payload | Add pagination/server-side filtering before 5,000+ row UX becomes normal |
+
+Expected throughput:
+
+| Workload | Expected fit in 8 hours |
+|---|---|
+| 10 companies, stores + Gemini Batch | Yes |
+| 10 companies, selective Maps 100 | Yes |
+| 10 companies, Reddit for all | Technically yes, but source ROI questionable |
+| 10 companies, 5,000-6,000 rows each | Yes if Batch completes normally; UI/API should paginate results |
+
+## 24. Product Recommendations To Carry Forward
+
+| Priority | Recommendation | Why |
+|---|---|---|
+| P0 | Switch Gemini classification to slim row-id contract | Biggest token reduction without losing core insight |
+| P0 | Remove per-row `english_gloss`; generate gloss only for top quotes | Largest output-token win |
+| P0 | Remove severity from LLM output if severity is not used by the operator | Simplifies UI and schema load |
+| P0 | Enforce Maps global cap of 100 per company | Keeps Maps useful and budget-safe |
+| P0 | Keep paid Play/App Store fallbacks disabled | Avoid surprise spend |
+| P1 | Add Play low-star selection: keep `rating <= 3` first | Aligns spend with complaint mining |
+| P1 | Add Reddit toggle plus relevance gate | Reddit can be good, but not default-good |
+| P1 | Add per-source ROI card | Operator can see whether Reddit/Maps paid for itself |
+| P1 | Add results pagination/server-side filters | Required for 5,000+ rows |
+| P2 | Add source-concurrency setting | Useful if Apify/proxy starts throttling |
+| P2 | Add optional praise sampling | Keeps positive themes without sending thousands of 5-star rows |
+
+## 25. Google Stitch Redesign Prompt
+
+Use this prompt in Google Stitch. It asks for five directions and leaves visual style open while preserving the actual product requirements.
+
+```text
+Design a polished web platform for a single-operator Voice-of-Customer analysis tool.
+
+The product lets an operator submit consumer app/company links, run an overnight review-analysis pipeline, and inspect the final insight output. It is not a marketing site. It is an operational research dashboard for a founder/PM/analyst.
+
+Create five distinct design directions. For each direction, show:
+1. Home / run queue screen
+2. Company run detail screen
+3. Admin/settings screen
+4. Cost and source-quality view
+5. Empty/loading/error states
+
+Core product flow:
+- Operator enters company name, Play Store link, App Store link, website link.
+- Operator can toggle optional sources:
+  - Google Maps reviews, default off, recommended for service/physical brands, cap 100 reviews.
+  - Reddit, default off, relevance-gated.
+- The system runs one company at a time overnight, but the UI can queue multiple companies.
+- Each company has a visible state:
+  queued, scraping, cleaning, discovering themes, classifying with Gemini Batch, synthesizing, done, partial, failed.
+- State must be visible both on the homepage queue and inside each company page.
+- Batch jobs may be pending for minutes, so the design should make waiting feel transparent rather than broken.
+
+Home / queue screen requirements:
+- Submit form at the top or side.
+- Run queue with company name, source toggles, current stage, progress, start time, duration, cost so far, quarantine rate, and completeness.
+- Show "one company running now" clearly, with upcoming queued companies below.
+- Include quick filters: running, done, partial, failed.
+- Include a compact budget summary: today's runs, total cost, average cost/company.
+
+Company results page requirements:
+- Header: company name, run status, date range, total cleaned reviews, cost, quarantine rate, dedup rate.
+- Completeness banner: source status for Play, App Store, Maps, Reddit, MouthShut disabled.
+- Source mix and source ROI: rows, useful themed rows, non-other %, cost, cost per useful row.
+- Charts:
+  - Top themes by score
+  - Bucket split: complaint / feature_request / praise
+  - Source mix
+  - Volume over time
+  - Optional severity only if enabled; otherwise do not make severity prominent
+- Reviews table with filters:
+  source, bucket, theme, rating, language, date range, search text.
+- Keep the table readable for 5,000+ rows: pagination, sticky filters, compact rows.
+- Downloads: xlsx, csv, json, deck-spec.md.
+- Deck-spec panel with copy button and a disabled/stub "Send to Chronicle / Gamma" action.
+- Show top representative quotes per theme. Original text is primary; English gloss appears only for selected top quotes.
+
+Admin/settings requirements:
+- Provider/model: Gemini 3.1 Flash-Lite Batch-only as default.
+- Batch size setting.
+- Max review settings:
+  - Play Store selected rows target
+  - App Store cap note around 500
+  - Maps cap, default 100
+  - Reddit cap, default off
+- Source toggles and source weights.
+- Budget cap per run.
+- Low-confidence threshold based on quarantine rate.
+- Cost estimator preview: show expected INR/company before running.
+
+Cost/source-quality view requirements:
+- Explain cost from first principles:
+  Gemini input tokens, Gemini output tokens, Apify Reddit cost, Apify Maps cost, Google Places discovery.
+- Show per-source value:
+  rows scraped, rows kept after cleaning, non-other %, cost, cost/useful row.
+- Make it easy to decide whether Reddit or Maps should stay on for the next run.
+
+Design tone:
+- Serious, modern, analytical, trustworthy.
+- Avoid marketing hero-page treatment.
+- Prioritize clarity, dense information, and calm hierarchy.
+- Use restrained color, strong tables, clear status chips, and professional charts.
+- The UI should feel like an internal command center for research, not a social media analytics toy.
+
+Output:
+- Provide five design directions with names and short rationale.
+- For the strongest direction, provide a detailed screen-by-screen component layout.
+- Include responsive behavior for desktop and laptop-width screens.
+- Include microcopy for statuses, warnings, empty states, and partial-source failures.
+```

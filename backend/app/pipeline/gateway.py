@@ -118,12 +118,7 @@ class LLMGateway:
     async def discover_themes(self, sample: List[CleanReview]) -> ThemeSet:
         if self._dev_mode:
             return self._heuristic_theme_set(sample)
-        prompt = {
-            "task": "Discover up to 10 themes per bucket for voice-of-customer reviews.",
-            "buckets": list(BUCKETS),
-            "reviews": [{"text": r.text, "rating": r.rating, "source": r.source, "language": r.language} for r in sample],
-            "schema": {"complaint": ["theme"], "feature_request": ["theme"], "praise": ["theme"]},
-        }
+        prompt = self._theme_discovery_prompt(sample)
         try:
             if self.provider == "gemini":
                 data = await self._json_call_batch(prompt, "voc-theme-discovery", {"key": "theme-discovery"})
@@ -140,29 +135,7 @@ class LLMGateway:
     async def classify_batch(self, reviews: List[CleanReview], theme_set: ThemeSet) -> List[Tag]:
         if self._dev_mode:
             return [self._heuristic_tag(review, theme_set) for review in reviews]
-        prompt = {
-            "task": "Classify each review. Use only the supplied theme set or 'other'. Return strict JSON.",
-            "severity_scale": {
-                "1": "cosmetic/minor",
-                "2": "blocks a task, workaround exists",
-                "3": "churn, money lost, trust, or safety broken",
-            },
-            "theme_set": theme_set,
-            "reviews": [
-                {"review_hash": r.review_hash, "text": r.text, "rating": r.rating, "source": r.source, "language": r.language}
-                for r in reviews
-            ],
-            "schema": [
-                {
-                    "review_hash": "string",
-                    "language": "en|hi|hinglish|other",
-                    "english_gloss": "string",
-                    "bucket": "complaint|feature_request|praise",
-                    "theme": "theme from set or other",
-                    "severity": "1|2|3",
-                }
-            ],
-        }
+        prompt = self._classification_prompt(reviews, theme_set)
         for attempt in range(3):
             try:
                 data = await self._json_call(prompt)
@@ -273,29 +246,30 @@ class LLMGateway:
             return code in {429, 500, 502, 503, 504}
         return isinstance(exc, (httpx.TimeoutException, JSONDecodeError, KeyError, ValueError))
 
+    def _theme_discovery_prompt(self, sample: List[CleanReview]) -> Dict[str, Any]:
+        return {
+            "task": "discover_themes",
+            "buckets": list(BUCKETS),
+            "max_themes_per_bucket": 10,
+            "language": "Hindi/Hinglish/English allowed",
+            "reviews": [[index + 1, review.rating, review.text] for index, review in enumerate(sample)],
+            "row_format": "[row_id, rating, text]",
+            "output": {"complaint": ["theme"], "feature_request": ["theme"], "praise": ["theme"]},
+        }
+
     def _classification_prompt(self, reviews: List[CleanReview], theme_set: ThemeSet) -> Dict[str, Any]:
         return {
-            "task": "Classify each review. Use only the supplied theme set or 'other'. Return strict JSON.",
-            "severity_scale": {
-                "1": "cosmetic/minor",
-                "2": "blocks a task, workaround exists",
-                "3": "churn, money lost, trust, or safety broken",
-            },
+            "task": "classify_reviews",
+            "rules": [
+                "Use only the supplied buckets and themes.",
+                "Return strict JSON only.",
+                "Return one row per input row.",
+                "Output compact arrays in this exact order: [row_id, bucket, theme].",
+            ],
             "theme_set": theme_set,
-            "reviews": [
-                {"review_hash": r.review_hash, "text": r.text, "rating": r.rating, "source": r.source, "language": r.language}
-                for r in reviews
-            ],
-            "schema": [
-                {
-                    "review_hash": "string",
-                    "language": "en|hi|hinglish|other",
-                    "english_gloss": "string",
-                    "bucket": "complaint|feature_request|praise",
-                    "theme": "theme from set or other",
-                    "severity": "1|2|3",
-                }
-            ],
+            "reviews": [[index + 1, review.rating, review.text] for index, review in enumerate(reviews)],
+            "row_format": "[row_id, rating, text]",
+            "output_format": "[row_id, bucket, theme]",
         }
 
     def _generate_request(self, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
@@ -433,10 +407,22 @@ class LLMGateway:
             data = data.get("tags") or data.get("items") or data.get("reviews")
         if not isinstance(data, list):
             raise ValueError("tags must be a list")
-        by_hash = {str(item.get("review_hash")): item for item in data if isinstance(item, dict)}
+        by_hash: Dict[str, Dict[str, Any]] = {}
+        by_row_id: Dict[int, Dict[str, Any]] = {}
+        for item in data:
+            parsed = self._parse_tag_item(item)
+            if not parsed:
+                continue
+            if parsed.get("review_hash"):
+                by_hash[str(parsed["review_hash"])] = parsed
+            if parsed.get("row_id") is not None:
+                try:
+                    by_row_id[int(parsed["row_id"])] = parsed
+                except (TypeError, ValueError):
+                    continue
         tags: List[Tag] = []
-        for review in reviews:
-            item = by_hash.get(review.review_hash)
+        for index, review in enumerate(reviews, start=1):
+            item = by_hash.get(review.review_hash) or by_row_id.get(index)
             if not item:
                 self.usage.malformed_retries.append({"attempt": "row_fallback", "reason": "missing review tag", "review_hash": review.review_hash})
                 tags.append(self._heuristic_tag(review, theme_set))
@@ -449,23 +435,32 @@ class LLMGateway:
             theme = str(item.get("theme") or "other").strip().lower().replace(" ", "_")
             if theme not in theme_set[bucket]:
                 theme = "other"
-            try:
-                severity = int(item.get("severity") or 1)
-            except (TypeError, ValueError):
-                severity = 1
-            if severity not in (1, 2, 3):
-                severity = 1
             tags.append(
                 Tag(
                     review_hash=review.review_hash,
                     language=str(item.get("language") or review.language),
-                    english_gloss=str(item.get("english_gloss") or review.text),
+                    english_gloss=item.get("english_gloss"),
                     bucket=bucket,
                     theme=theme,
-                    severity=severity,
+                    severity=None,
                 )
             )
         return tags
+
+    def _parse_tag_item(self, item: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(item, dict):
+            row_id = item.get("row_id", item.get("id", item.get("i")))
+            return {
+                "row_id": row_id,
+                "review_hash": item.get("review_hash"),
+                "bucket": item.get("bucket"),
+                "theme": item.get("theme"),
+                "language": item.get("language"),
+                "english_gloss": item.get("english_gloss"),
+            }
+        if isinstance(item, list) and len(item) >= 3:
+            return {"row_id": item[0], "bucket": item[1], "theme": item[2]}
+        return None
 
     def _heuristic_theme_set(self, sample: List[CleanReview]) -> ThemeSet:
         return {
@@ -508,16 +503,13 @@ class LLMGateway:
         if quarantine:
             theme = "other"
 
-        severity = 1
-        if bucket == "complaint":
-            severity = 3 if any(word in text for word in ["money", "paise", "debit", "trust", "fraud", "churn"]) else 2
         return Tag(
             review_hash=review.review_hash,
             language=review.language,
-            english_gloss=self._gloss(review.text),
+            english_gloss=None,
             bucket=bucket,
             theme=theme,
-            severity=severity,
+            severity=None,
         )
 
     def _gloss(self, text: str) -> str:

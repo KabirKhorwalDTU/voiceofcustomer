@@ -9,6 +9,7 @@ export type Company = {
   brand_keyword: string;
   maps_enabled: boolean;
   maps_location_hint: string;
+  reddit_enabled: boolean;
   created_at: string;
 };
 
@@ -28,6 +29,9 @@ export type Run = {
   error?: string | null;
   created_at: string;
   company?: Company;
+  current_stage: string;
+  stage_detail: string;
+  progress: number;
 };
 
 export type Review = {
@@ -55,6 +59,14 @@ export type Theme = {
   theme_score: number;
   rank: number;
   top_quotes: Array<Record<string, unknown>>;
+};
+
+export type ReviewPage = {
+  items: Review[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
 };
 
 export type RunLog = {
@@ -117,7 +129,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   baseUrl: API_BASE,
-  submitRun(payload: { name: string; play_link: string; app_store_link: string; website: string; maps_enabled?: boolean; maps_location_hint?: string }) {
+  submitRun(payload: { name: string; play_link: string; app_store_link: string; website: string; maps_enabled?: boolean; maps_location_hint?: string; reddit_enabled?: boolean }) {
     return request<{ run: Run; deduped_existing: boolean }>("/api/runs", {
       method: "POST",
       body: JSON.stringify(payload),
@@ -131,6 +143,13 @@ export const api = {
   },
   results(id: string) {
     return request<Results>(`/api/runs/${id}/results`);
+  },
+  reviews(id: string, params: Record<string, string | number | undefined>) {
+    const search = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== "") search.set(key, String(value));
+    });
+    return request<ReviewPage>(`/api/runs/${id}/reviews?${search.toString()}`);
   },
   logs(id: string) {
     return request<RunLog[]>(`/api/runs/${id}/logs`);

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import date
 
 import pytest
@@ -29,6 +30,7 @@ class TestCompany:
     domain = "examplepay.com"
     maps_enabled = False
     maps_location_hint = "India"
+    reddit_enabled = True
 
 
 def test_resolver_extracts_store_ids_and_brand_keyword():
@@ -78,6 +80,15 @@ def test_reddit_actor_input_uses_verified_search_schema():
     assert payload["proxy"] == {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"]}
 
 
+def test_maps_actor_input_uses_lowest_rating_india_cap():
+    payload = build_actor_input("maps", TestCompany(), 10000, place_ids=["place-1"])
+
+    assert payload["placeIds"] == ["place-1"]
+    assert payload["maxReviews"] == 100
+    assert payload["reviewsSort"] == "lowestRanking"
+    assert payload["reviewsOrigin"] == "google"
+
+
 def test_places_match_brand_prefixed_location_names():
     place = {"displayName": {"text": "Snabbit Kadubeesanahalli Training Centre"}}
 
@@ -102,6 +113,19 @@ def test_gemini_batch_request_shape_matches_docs():
         },
         "metadata": {"key": "batch-0"},
     }
+
+
+def test_gemini_classification_prompt_is_slim():
+    review = CleanReview(source="play", review_hash="hash-1", text="Payment failed", date=date.today(), rating=1, language="en")
+    gateway = LLMGateway(get_config(), TestSettings())
+
+    prompt = gateway._classification_prompt([review], {"complaint": ["payments_or_refunds", "other"], "feature_request": ["other"], "praise": ["other"]})
+
+    assert prompt["reviews"] == [[1, 1, "Payment failed"]]
+    assert prompt["output_format"] == "[row_id, bucket, theme]"
+    assert "severity" not in json.dumps(prompt)
+    assert "english_gloss" not in json.dumps(prompt)
+    assert "review_hash" not in json.dumps(prompt)
 
 
 def test_gemini_sync_cost_uses_flash_lite_token_pricing():
@@ -187,7 +211,7 @@ def test_gateway_dev_classifier_handles_hinglish():
         theme_set = await gateway.discover_themes([review])
         tags, usage = await gateway.classify_all([review], theme_set)
         assert tags[0].bucket == "complaint"
-        assert tags[0].severity == 3
+        assert tags[0].severity is None
         assert tags[0].theme == "payments_or_refunds"
         assert usage.total_batches == 1
 
@@ -300,12 +324,12 @@ def test_gateway_validation_defaults_null_severity():
     )
     gateway = LLMGateway(get_config(), TestSettings())
     tags = gateway._validate_tags(
-        [{"review_hash": "abc", "language": "en", "english_gloss": "Good service", "bucket": "praise", "theme": "other", "severity": None}],
+        [[1, "praise", "other"]],
         [review],
         {"complaint": ["other"], "feature_request": ["other"], "praise": ["other"]},
     )
 
-    assert tags[0].severity == 1
+    assert tags[0].severity is None
 
 
 def test_gateway_quarantines_theme_discovery_provider_failure():

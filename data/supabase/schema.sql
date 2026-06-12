@@ -27,6 +27,7 @@ create table if not exists companies (
     brand_keyword text not null,
     maps_enabled boolean not null default false,
     maps_location_hint text not null default 'India',
+    reddit_enabled boolean not null default false,
     created_at timestamptz not null default now()
 );
 
@@ -130,7 +131,7 @@ create table if not exists settings (
     id integer primary key default 1 check (id = 1),
     provider text not null default 'gemini',
     model text not null default 'gemini-3.1-flash-lite',
-    max_reviews integer not null default 3000,
+    max_reviews integer not null default 10000,
     batch_size integer not null default 100,
     recency_window_days integer not null default 90,
     dedup_threshold numeric(5, 4) not null default 0.86,
@@ -142,3 +143,5 @@ create table if not exists settings (
 insert into settings (id)
 values (1)
 on conflict (id) do nothing;
+
+alter table companies add column if not exists reddit_enabled boolean not null default false;

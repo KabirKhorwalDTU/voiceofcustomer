@@ -41,9 +41,11 @@ class BudgetExceeded(Exception):
 
 def source_cap(source: str, max_reviews: int) -> int:
     if source == "maps":
-        return min(max_reviews, 1000)
+        return 100
     if source == "reddit":
         return min(max_reviews, 100)
+    if source == "appstore":
+        return min(max_reviews, 500)
     if source == "mouthshut":
         return 0
     return max_reviews
@@ -171,8 +173,8 @@ def build_actor_input(source: str, company: Any, max_reviews: int, place_ids: Op
         }
     if source == "maps":
         if place_ids:
-            return {"placeIds": place_ids, "maxReviews": cap, "language": "en"}
-        return {"searchStringsArray": [company.brand_keyword], "maxReviews": cap, "language": "en"}
+            return {"placeIds": place_ids, "maxReviews": cap, "reviewsSort": "lowestRanking", "language": "en", "reviewsOrigin": "google"}
+        return {"searchStringsArray": [f"{company.brand_keyword} India"], "maxReviews": cap, "reviewsSort": "lowestRanking", "language": "en", "reviewsOrigin": "google"}
     if source == "mouthshut":
         return {"query": company.brand_keyword, "maxItems": cap}
     return {}
@@ -246,6 +248,8 @@ async def discover_places(company: Any, config: AppConfig) -> Tuple[List[str], L
     if not config.google_maps_api_key:
         raise RuntimeError("GOOGLE_MAPS_API_KEY is not configured.")
     location_hint = company.maps_location_hint or "India"
+    if "india" not in location_hint.lower():
+        location_hint = f"{location_hint} India"
     domain_token = (company.domain or "").lower().replace("www.", "").split(".")[0]
     query_brands = [value for value in [domain_token, company.brand_keyword] if value]
     query_brands = list(dict.fromkeys(query_brands))
@@ -262,7 +266,7 @@ async def discover_places(company: Any, config: AppConfig) -> Tuple[List[str], L
     async with httpx.AsyncClient(timeout=30) as client:
         for query in queries:
             attempted_queries.append(query)
-            response = await client.post("https://places.googleapis.com/v1/places:searchText", headers=headers, json={"textQuery": query})
+            response = await client.post("https://places.googleapis.com/v1/places:searchText", headers=headers, json={"textQuery": query, "regionCode": "IN"})
             if response.is_error:
                 raise RuntimeError(format_response_error(response))
             data = response.json()
@@ -360,6 +364,8 @@ async def scrape_sources(company: Any, settings: Any, config: AppConfig, current
             return source, [], {"status": "disabled", "provider": "apify", "actor": ACTORS[source], "attempts": 0, "count": 0, "cost_usd": 0, "reason": "disabled_by_default"}
         if source == "maps" and not company.maps_enabled:
             return source, [], {"status": "disabled", "provider": "apify", "actor": ACTORS[source], "attempts": 0, "count": 0, "cost_usd": 0, "reason": "maps_opt_in_false"}
+        if source == "reddit" and not getattr(company, "reddit_enabled", False):
+            return source, [], {"status": "disabled", "provider": "apify", "actor": ACTORS[source], "attempts": 0, "count": 0, "cost_usd": 0, "reason": "reddit_opt_in_false"}
         if not config.apify_token:
             return source, [], {"status": "failed", "provider": "apify", "actor": ACTORS[source], "attempts": 0, "count": 0, "cost_usd": 0, "error": "APIFY_TOKEN is not configured."}
 
@@ -394,14 +400,15 @@ async def scrape_sources(company: Any, settings: Any, config: AppConfig, current
             status["searchTerms"] = [company.brand_keyword]
         return source, [], status
 
-    results = await asyncio.gather(
-        scrape_store_with_fallback("play"),
-        scrape_store_with_fallback("appstore"),
-        scrape_apify_source("reddit"),
-        scrape_apify_source("maps"),
-        scrape_apify_source("mouthshut"),
-    )
-    for source, reviews, status in results:
+    scraper_steps = [
+        ("play", scrape_store_with_fallback),
+        ("appstore", scrape_store_with_fallback),
+        ("reddit", scrape_apify_source),
+        ("maps", scrape_apify_source),
+        ("mouthshut", scrape_apify_source),
+    ]
+    for source_name, scraper in scraper_steps:
+        source, reviews, status = await scraper(source_name)
         projected = cost + float(status.get("cost_usd") or 0)
         if projected > float(settings.per_run_budget_usd):
             completeness[source] = {**status, "status": "aborted_budget", "count": 0}

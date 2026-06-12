@@ -97,6 +97,5 @@ def test_deck_spec_emits_frozen_contract_b_slides():
     assert "## Slide 2 - The data" in deck
     assert "## Slide 3 - Representative voices" in deck
     assert "## Slide 4 - Prioritized problem + proposed solution" in deck
-    assert "payments or refunds" in deck
+    assert "Payments & refunds." in deck
     assert "Money was debited but payment was not received" in deck
-
