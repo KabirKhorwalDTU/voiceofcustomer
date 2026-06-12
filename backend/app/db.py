@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from typing import Iterator
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.pool import NullPool
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import get_config
@@ -14,6 +15,10 @@ def engine_options(database_url: str) -> dict:
         # Supabase's transaction pooler does not preserve backend sessions for
         # psycopg prepared statements, so disable automatic preparation.
         options["connect_args"] = {"prepare_threshold": None}
+        # The app is a single long-running worker plus polling UI requests.
+        # Supabase's pooler should own connection reuse; keeping a local
+        # QueuePool can exhaust slots during Render blue/green deploy overlap.
+        options["poolclass"] = NullPool
     return options
 
 
