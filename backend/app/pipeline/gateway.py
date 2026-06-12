@@ -91,6 +91,14 @@ def _format_http_error(exc: Exception) -> str:
 ProgressCallback = Callable[[Dict[str, Any]], Awaitable[None]]
 
 
+GEMINI_PRICING_PER_MILLION = {
+    "gemini-3.1-flash-lite": {
+        "sync": {"input": 0.25, "output": 1.50},
+        "batch": {"input": 0.125, "output": 0.75},
+    }
+}
+
+
 class LLMGateway:
     def __init__(self, config: AppConfig, settings: Any, progress_callback: Optional[ProgressCallback] = None) -> None:
         self.config = config
@@ -371,9 +379,9 @@ class LLMGateway:
         response = item.get("response") or {}
         text = response["candidates"][0]["content"]["parts"][0]["text"]
         usage = response.get("usageMetadata") or {}
-        self.usage.input_tokens += int(usage.get("promptTokenCount") or 0)
-        self.usage.output_tokens += int(usage.get("candidatesTokenCount") or 0)
-        self.usage.total_tokens += int(usage.get("totalTokenCount") or 0)
+        input_tokens = int(usage.get("promptTokenCount") or 0)
+        output_tokens = int(usage.get("candidatesTokenCount") or 0)
+        self._record_token_usage(input_tokens, output_tokens, int(usage.get("totalTokenCount") or 0), "batch")
         return json.loads(text)
 
     async def _gemini_call(self, prompt: str) -> Any:
@@ -389,11 +397,21 @@ class LLMGateway:
             data = response.json()
         text = data["candidates"][0]["content"]["parts"][0]["text"]
         usage = data.get("usageMetadata") or {}
-        self.usage.input_tokens += int(usage.get("promptTokenCount") or 0)
-        self.usage.output_tokens += int(usage.get("candidatesTokenCount") or 0)
-        self.usage.total_tokens += int(usage.get("totalTokenCount") or 0)
-        self.usage.cost_usd += 0.0001
+        input_tokens = int(usage.get("promptTokenCount") or 0)
+        output_tokens = int(usage.get("candidatesTokenCount") or 0)
+        self._record_token_usage(input_tokens, output_tokens, int(usage.get("totalTokenCount") or 0), "sync")
         return json.loads(text)
+
+    def _record_token_usage(self, input_tokens: int, output_tokens: int, total_tokens: int, path: str) -> None:
+        self.usage.input_tokens += input_tokens
+        self.usage.output_tokens += output_tokens
+        self.usage.total_tokens += total_tokens
+        pricing = GEMINI_PRICING_PER_MILLION.get(self.model, {}).get(path)
+        if pricing:
+            self.usage.cost_usd += (
+                (input_tokens / 1_000_000) * pricing["input"]
+                + (output_tokens / 1_000_000) * pricing["output"]
+            )
 
     async def _deepseek_call(self, prompt: str) -> Any:
         headers = {"Authorization": f"Bearer {self.config.deepseek_api_key}"}

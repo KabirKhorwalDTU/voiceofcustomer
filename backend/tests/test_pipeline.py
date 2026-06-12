@@ -91,6 +91,24 @@ def test_gemini_batch_request_shape_matches_docs():
     }
 
 
+def test_gemini_sync_cost_uses_flash_lite_token_pricing():
+    gateway = LLMGateway(get_config(), TestSettings())
+
+    gateway._record_token_usage(input_tokens=6_500_000, output_tokens=710_000, total_tokens=7_210_000, path="sync")
+
+    assert gateway.usage.input_tokens == 6_500_000
+    assert gateway.usage.output_tokens == 710_000
+    assert gateway.usage.cost_usd == 2.69
+
+
+def test_gemini_batch_cost_uses_half_price_token_pricing():
+    gateway = LLMGateway(get_config(), TestSettings())
+
+    gateway._record_token_usage(input_tokens=6_500_000, output_tokens=710_000, total_tokens=7_210_000, path="batch")
+
+    assert gateway.usage.cost_usd == 1.345
+
+
 def test_gateway_dev_classifier_handles_hinglish():
     async def run():
         text = "Paise debit ho gaye but payment nahi mila"
