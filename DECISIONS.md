@@ -236,3 +236,55 @@ Result: `15 passed in 3.20s`.
 - Batch submit is now correctly shaped and accepted, but current production behavior falls back to sync after a 300 second Batch poll timeout. This is intentional for interactive completion. For overnight Batch-first operation, increase the poll window or move Batch polling to a durable async job.
 - Reddit keyword search can include noisy posts because the actor searches broad Reddit content for the brand term. The v5 requirement was to return real posts and log the exact search terms; deeper relevance filtering can be a v6 improvement.
 - Secrets remain in deployment environment variables only and are not committed in this file.
+
+## Final Sprint: Low-Cost Operator Mode
+
+Date: 2026-06-13.
+
+Production URLs:
+
+- Frontend: `https://frontend-eight-sandy-65.vercel.app`.
+- Backend: `https://voc-ai-agent-api.onrender.com`.
+
+Final implementation decisions:
+
+- Classification/final analysis now uses only 1/2/3-star rows from Play, App Store, and Maps. Reddit remains optional and unstarred, so it is included only when explicitly enabled.
+- Google Maps remains opt-in, searches within India via Places API New, then scrapes Apify reviews sorted lowest-rated first with a 100-review cap.
+- Reddit is optional in the submission UI and defaults off.
+- MouthShut remains disabled by default.
+- The admin panel was removed from the frontend. Settings APIs remain in the backend for future controlled configuration.
+- Gemini classification uses the slim compact output contract: `[row_id, bucket, theme]`. The live FirstClub run stored `severity = null` and `english_gloss = null` on newly classified rows.
+- Theme labels are display-humanized for charts, tables, and deck-spec output while raw stored themes remain available for filtering and exports.
+- Dashboard active runs are capped at 10 visible cards. Run history is capped at 250 API rows and paginated in the UI. Tagged reviews are server-paginated with global column search plus source/rating/bucket/theme filters.
+- Cost display now shows sub-rupee values instead of rounding them to `INR 0`.
+
+FirstClub E2E verification:
+
+- Submitted through the production UI.
+- Run ID: `1f5938c1-2355-4313-aace-27c0980d63e2`.
+- Results URL: `https://frontend-eight-sandy-65.vercel.app/runs/1f5938c1-2355-4313-aace-27c0980d63e2`.
+- Status: `done`.
+- Cost estimate: `$0.0049`, displayed as about `INR 0.49` at the project conversion rule of INR 100/USD.
+- Quarantine rate: `0.0`.
+- Gemini tokens: `19,352`.
+- Source completeness: Play OSS ok with `958` raw rows; App Store OSS ok with `0` rows; Maps disabled; Reddit disabled; MouthShut disabled.
+- Selected/analyzed rows: `162`.
+- Rating distribution: 1-star `121`, 2-star `17`, 3-star `24`; no 4/5-star rows were analyzed.
+- Review pagination verified: page 2 of 4 returns 50 rows.
+- Review search verified: query `refund` returns 17 rows and resets to page 1 of 1.
+- Downloads verified HTTP 200: CSV, JSON, XLSX.
+- Deck-spec verified with corrected human label: `Pricing: overpriced products compared to competitors.`
+
+Final verification commands:
+
+```bash
+backend/.venv/bin/python -m pytest -q
+npm --prefix frontend run build
+curl -sS https://voc-ai-agent-api.onrender.com/health
+```
+
+Final results:
+
+- Backend tests: `26 passed`.
+- Frontend build: passed.
+- Backend health: `{"ok":true,"bootstrap_ready":true}`.
