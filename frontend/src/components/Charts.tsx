@@ -13,7 +13,15 @@ function humanizeTheme(theme: string) {
   if (theme === "unfair_refund_policies_and_failure_to_process_refunds") {
     return "Refunds: unfair policies & failures to process.";
   }
-  return cleanThemeWords(theme.replaceAll("_", " "));
+  const words = cleanThemeWords(theme.replaceAll("_", " "));
+  const lowerWords = words.toLowerCase();
+  if (lowerWords.includes("overpriced") && !lowerWords.startsWith("pricing")) {
+    return `Pricing: ${words}.`;
+  }
+  if (lowerWords.startsWith("pricing ")) {
+    return `Pricing: ${words.replace(/^pricing\s+/i, "")}.`;
+  }
+  return `${words.charAt(0).toUpperCase()}${words.slice(1)}.`;
 }
 
 function cleanThemeWords(words: string) {

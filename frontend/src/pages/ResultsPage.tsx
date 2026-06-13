@@ -320,6 +320,10 @@ function humanizeTheme(theme?: string | null) {
     return "Refunds: unfair policies & failures to process.";
   }
   const words = cleanThemeWords(theme.replaceAll("_", " ").trim());
+  const lowerWords = words.toLowerCase();
+  if (lowerWords.includes("overpriced") && !lowerWords.startsWith("pricing")) {
+    return `Pricing: ${words}.`;
+  }
   const prefixes: Record<string, string> = {
     refund: "Refunds",
     payment: "Payments",
@@ -334,7 +338,7 @@ function humanizeTheme(theme?: string | null) {
     price: "Pricing",
   };
   for (const [key, label] of Object.entries(prefixes)) {
-    if (words.includes(key)) {
+    if (words === key || words.startsWith(`${key} `) || words.includes(` ${key} `)) {
       const rest = words.replace(key, "").replace(/\s+/g, " ").trim();
       return rest ? `${label}: ${rest}.` : label;
     }

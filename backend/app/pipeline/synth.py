@@ -31,6 +31,9 @@ def humanize_theme(theme: Optional[str]) -> str:
     words = clean_theme_words(theme.replace("_", " ").strip())
     if not words:
         return "Other"
+    lower_words = words.lower()
+    if "overpriced" in lower_words and not lower_words.startswith("pricing"):
+        return f"Pricing: {words}."
     topic_prefixes = {
         "refund": "Refunds",
         "payment": "Payments",
@@ -42,11 +45,11 @@ def humanize_theme(theme: Optional[str]) -> str:
         "quality": "Quality",
         "app": "App",
         "order": "Orders",
-        "price": "Pricing",
         "pricing": "Pricing",
+        "price": "Pricing",
     }
     for key, label in topic_prefixes.items():
-        if key in words:
+        if words == key or words.startswith(f"{key} ") or f" {key} " in words:
             remainder = words.replace(key, "", 1).replace("  ", " ").strip(" -:")
             if remainder:
                 return f"{label}: {remainder}."

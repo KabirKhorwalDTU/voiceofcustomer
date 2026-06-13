@@ -2,7 +2,7 @@ from datetime import date
 import json
 
 from app.models import Company, Review, Run, Theme
-from app.pipeline.synth import build_deck_spec, export_reviews
+from app.pipeline.synth import build_deck_spec, export_reviews, humanize_theme
 
 
 def sample_objects():
@@ -99,3 +99,9 @@ def test_deck_spec_emits_frozen_contract_b_slides():
     assert "## Slide 4 - Prioritized problem + proposed solution" in deck
     assert "Payments & refunds." in deck
     assert "Money was debited but payment was not received" in deck
+
+
+def test_theme_humanizer_does_not_mangle_overpriced_labels():
+    assert humanize_theme("pricing_overd_products_compared_to_competitors") == "Pricing: overpriced products compared to competitors."
+    assert humanize_theme("overd_products_compared_to_competitors") == "Pricing: overpriced products compared to competitors."
+    assert humanize_theme("unfair_refund_policies_and_failure_to_process_refunds") == "Refunds: unfair policies & failures to process."
