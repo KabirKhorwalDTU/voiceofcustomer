@@ -1168,7 +1168,22 @@ Expected L2 increment before live measurement:
 | 2,000 selected rows | ~80k-180k | ~INR 3-8 |
 | 5,000 selected rows | ~180k-450k | ~INR 8-20 |
 
-This is acceptable for Phase 1 because it improves actionability more than another broad chart would. The live FirstClub rerun should be used as the first actual datapoint and then added to this model.
+Measured FirstClub L2 rerun:
+
+| Metric | Value |
+|---|---:|
+| Selected rows | 208 |
+| Eligible L2 parent themes | 3 |
+| Reviews assigned to L2 | 171 |
+| L1 Batch tokens | 14,373 |
+| L2 Batch tokens | 10,749 |
+| L2 tokens / selected row | 51.7 |
+| L2 tokens / L2-assigned row | 62.9 |
+| L2 Batch cost | `$0.003017` |
+| L2 cost at INR 100/USD | INR 0.30 |
+| Total run cost | `$0.0055` |
+
+This is acceptable for Phase 1 because it improves actionability more than another broad chart would. The first real datapoint suggests L2 is comfortably inside the INR 50/company target when the selected-row policy stays low-star only and Maps/Reddit remain opt-in/capped.
 
 ## 26. Google Stitch Redesign Prompt
 

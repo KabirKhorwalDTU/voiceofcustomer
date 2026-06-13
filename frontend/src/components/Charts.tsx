@@ -10,6 +10,8 @@ function entries(obj?: Record<string, number>) {
 function humanizeTheme(theme: string) {
   if (theme === "other") return "Other";
   if (theme === "payments_or_refunds") return "Payments & refunds.";
+  if (theme === "pricing_and_promotions") return "Pricing & promotions.";
+  if (theme === "pricing_and_value") return "Pricing & value.";
   if (theme === "unfair_refund_policies_and_failure_to_process_refunds") {
     return "Refunds: unfair policies & failures to process.";
   }
@@ -19,7 +21,9 @@ function humanizeTheme(theme: string) {
     return `Pricing: ${words}.`;
   }
   if (lowerWords.startsWith("pricing ")) {
-    return `Pricing: ${words.replace(/^pricing\s+/i, "")}.`;
+    const rest = words.replace(/^pricing\s+/i, "");
+    if (rest.startsWith("and ")) return `Pricing & ${rest.slice(4)}.`;
+    return `Pricing: ${rest}.`;
   }
   return `${words.charAt(0).toUpperCase()}${words.slice(1)}.`;
 }

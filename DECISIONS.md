@@ -255,7 +255,7 @@ Final implementation decisions:
 - The admin panel was removed from the frontend. Settings APIs remain in the backend for future controlled configuration.
 - Gemini classification uses the slim compact output contract: `[row_id, bucket, theme]`. The live FirstClub run stored `severity = null` and `english_gloss = null` on newly classified rows.
 - Theme labels are display-humanized for charts, tables, and deck-spec output while raw stored themes remain available for filtering and exports.
-- Dashboard active runs are capped at 10 visible cards. Run history is capped at 250 API rows and paginated in the UI. Tagged reviews are server-paginated with global column search plus source/rating/bucket/theme filters.
+- Dashboard active runs are capped at 10 visible cards. Run history is capped at 250 API rows and paginated in the UI. Tagged reviews are server-paginated with per-column filters for hash, source, rating, date, bucket, L1 theme, L2 theme, and review text.
 - Cost display now shows sub-rupee values instead of rounding them to `INR 0`.
 
 FirstClub E2E verification:
@@ -288,3 +288,91 @@ Final results:
 - Backend tests: `26 passed`.
 - Frontend build: passed.
 - Backend health: `{"ok":true,"bootstrap_ready":true}`.
+
+## Final Sprint: L2 Sub-Themes and Run Actions
+
+Date: 2026-06-13.
+
+Code and deployment:
+
+- Core L2 implementation commit deployed before final evidence patch: `8663836`.
+- Final evidence and label-polish patch: this commit.
+- Backend deploy verified healthy on Render: `{"ok":true,"bootstrap_ready":true}`.
+- Frontend production alias verified: `https://frontend-eight-sandy-65.vercel.app`.
+
+Implemented:
+
+- Added `reviews.l2_theme` and `themes.l2_subthemes`.
+- Added L2 Gemini Batch stage after L1 classification.
+- L2 only runs for `complaint` and `feature_request` L1 groups with at least 10 reviews.
+- L2 prompt uses slim rows: `[row_id, rating, text]`.
+- L2 output uses compact JSON arrays: `subthemes` plus `assignments`, with no review hash, source, date, severity, or english gloss in the LLM response.
+- Tagged CSV/XLSX/JSON exports now include `l2_theme`.
+- Deck spec now shows L2 breakdown for the top complaint/feature L1 themes.
+- Results UI now includes a Stitch-style L1/L2 density panel with inline expansion, `l2_theme` in the review table, and per-column table filters.
+- Company details page now has a rerun button.
+- Dashboard run history now has rerun and delete actions for each run; delete is blocked for active runs.
+
+FirstClub L2 rerun verification:
+
+- Triggered via the production UI rerun button.
+- Run ID: `b1e1c8f5-6ba3-4279-b8d3-34b10a878ab7`.
+- Results URL: `https://frontend-eight-sandy-65.vercel.app/runs/b1e1c8f5-6ba3-4279-b8d3-34b10a878ab7`.
+- Status: `done`.
+- Wall-clock: `226.0` seconds (`2026-06-13T17:39:08Z` to `2026-06-13T17:42:54Z`).
+- Cost estimate: `$0.0055`.
+- Quarantine rate: `0.0`.
+- Dedup ratio: `0.099`.
+- Model: `gemini:gemini-3.1-flash-lite`.
+- Total selected rows: `208`.
+- Source mix: Play `164`, App Store `44`; Maps/Reddit/MouthShut disabled.
+- Bucket split: complaint `165`, feature request `33`, praise `10`.
+- Rating distribution: 1-star `154`, 2-star `21`, 3-star `33`; no 4/5-star rows analyzed.
+
+Gemini usage on the L2 rerun:
+
+| Stage | Path | Input tokens | Output tokens | Total tokens | Cost USD | Batches | Quarantined |
+|---|---|---:|---:|---:|---:|---:|---:|
+| L1 classification | Batch | 13,282 | 1,091 | 14,373 | 0.002479 | 1 | 0 |
+| L2 sub-themes | Batch | 8,072 | 2,677 | 10,749 | 0.003017 | 3 | 0 |
+| Total | Batch | 21,354 | 3,768 | 25,122 | 0.005496 | 4 | 0 |
+
+L2 output:
+
+- Themes stored: `14`.
+- Parent L1 themes with L2 breakdown: `3`.
+- L2 rows created under those parents: `15`.
+- Example L2 rows under complaint `other`:
+  - `customer_service_and_app_experience`: `37` reviews, score `0.3109`.
+  - `pricing_and_promotions`: `33` reviews, score `0.2773`.
+  - `delivery_issues`: `17` reviews, score `0.1429`.
+
+Production API verification:
+
+- `GET /api/runs/b1e1c8f5-6ba3-4279-b8d3-34b10a878ab7/reviews?l2_theme=pricing_and_promotions&page=1&page_size=5` returned `33` rows.
+- `GET /api/runs/b1e1c8f5-6ba3-4279-b8d3-34b10a878ab7/reviews?text_query=refund&page=1&page_size=5` returned `8` rows.
+- `GET /api/runs/b1e1c8f5-6ba3-4279-b8d3-34b10a878ab7/reviews?bucket=complaint&page=1&page_size=5` returned `165` rows.
+- Downloads verified HTTP 200: CSV `71,184` bytes, JSON `120,597` bytes, XLSX `43,780` bytes.
+- `GET /api/runs/b1e1c8f5-6ba3-4279-b8d3-34b10a878ab7/deck-spec.md` verified HTTP 200 and contains `L2 breakdown`.
+
+Production UI verification:
+
+- Opened the deployed FirstClub results page in Chrome.
+- Verified title `FirstClub`.
+- Verified L2 panel is visible.
+- Verified deck-spec panel is visible.
+- Verified per-column filters render for hash, source, rating, date, bucket, L1 theme, L2 theme, and review text.
+- Verified company detail rerun button is visible.
+- Verified dashboard run history includes `Actions` and exposes rerun/delete buttons.
+
+Final verification commands:
+
+```bash
+backend/.venv/bin/python -m pytest -q
+npm --prefix frontend run build
+```
+
+Final results:
+
+- Backend tests: `28 passed in 69.31s`.
+- Frontend build: passed.

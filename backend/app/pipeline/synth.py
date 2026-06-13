@@ -24,6 +24,8 @@ def humanize_theme(theme: Optional[str]) -> str:
         return "Other"
     exact = {
         "payments_or_refunds": "Payments & refunds.",
+        "pricing_and_promotions": "Pricing & promotions.",
+        "pricing_and_value": "Pricing & value.",
         "unfair_refund_policies_and_failure_to_process_refunds": "Refunds: unfair policies & failures to process.",
     }
     if theme in exact:
@@ -49,11 +51,14 @@ def humanize_theme(theme: Optional[str]) -> str:
         "price": "Pricing",
     }
     for key, label in topic_prefixes.items():
-        if words == key or words.startswith(f"{key} ") or f" {key} " in words:
-            remainder = words.replace(key, "", 1).replace("  ", " ").strip(" -:")
-            if remainder:
-                return f"{label}: {remainder}."
+        if words == key:
             return label
+        if words.startswith(f"{key} "):
+            remainder = words[len(key) :].replace("  ", " ").strip(" -:")
+            if remainder:
+                if remainder.startswith("and "):
+                    return f"{label} & {remainder[4:]}."
+                return f"{label}: {remainder}."
     return words[:1].upper() + words[1:] + ("." if not words.endswith(".") else "")
 
 

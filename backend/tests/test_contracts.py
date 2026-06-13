@@ -117,5 +117,6 @@ def test_deck_spec_emits_frozen_contract_b_slides():
 
 def test_theme_humanizer_does_not_mangle_overpriced_labels():
     assert humanize_theme("pricing_overd_products_compared_to_competitors") == "Pricing: overpriced products compared to competitors."
+    assert humanize_theme("pricing_and_promotions") == "Pricing & promotions."
     assert humanize_theme("overd_products_compared_to_competitors") == "Pricing: overpriced products compared to competitors."
     assert humanize_theme("unfair_refund_policies_and_failure_to_process_refunds") == "Refunds: unfair policies & failures to process."

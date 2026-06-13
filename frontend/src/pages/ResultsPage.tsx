@@ -505,6 +505,8 @@ function humanizeTheme(theme?: string | null) {
   if (!theme) return "Pending";
   if (theme === "other") return "Other";
   if (theme === "payments_or_refunds") return "Payments & refunds.";
+  if (theme === "pricing_and_promotions") return "Pricing & promotions.";
+  if (theme === "pricing_and_value") return "Pricing & value.";
   if (theme === "unfair_refund_policies_and_failure_to_process_refunds") {
     return "Refunds: unfair policies & failures to process.";
   }
@@ -527,8 +529,10 @@ function humanizeTheme(theme?: string | null) {
     price: "Pricing",
   };
   for (const [key, label] of Object.entries(prefixes)) {
-    if (words === key || words.startsWith(`${key} `) || words.includes(` ${key} `)) {
-      const rest = words.replace(key, "").replace(/\s+/g, " ").trim();
+    if (words === key) return label;
+    if (words.startsWith(`${key} `)) {
+      const rest = words.slice(key.length).replace(/\s+/g, " ").trim();
+      if (rest.startsWith("and ")) return `${label} & ${rest.slice(4)}.`;
       return rest ? `${label}: ${rest}.` : label;
     }
   }
