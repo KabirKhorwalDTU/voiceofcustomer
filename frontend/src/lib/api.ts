@@ -45,6 +45,7 @@ export type Review = {
   english_gloss?: string | null;
   bucket?: string | null;
   theme?: string | null;
+  l2_theme?: string | null;
   severity?: number | null;
   representative_flag: boolean;
 };
@@ -59,6 +60,13 @@ export type Theme = {
   theme_score: number;
   rank: number;
   top_quotes: Array<Record<string, unknown>>;
+  l2_subthemes: Array<{
+    label: string;
+    display_label?: string;
+    count: number;
+    score: number;
+    top_quotes: Array<Record<string, unknown>>;
+  }>;
 };
 
 export type ReviewPage = {
@@ -140,6 +148,19 @@ export const api = {
   },
   run(id: string) {
     return request<Run>(`/api/runs/${id}`);
+  },
+  rerun(id: string) {
+    return request<{ run: Run; deduped_existing: boolean }>(`/api/runs/${id}/rerun`, {
+      method: "POST",
+    });
+  },
+  deleteRun(id: string) {
+    return fetch(`${API_BASE}/api/runs/${id}`, { method: "DELETE" }).then(async (response) => {
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(body || response.statusText);
+      }
+    });
   },
   results(id: string) {
     return request<Results>(`/api/runs/${id}/results`);

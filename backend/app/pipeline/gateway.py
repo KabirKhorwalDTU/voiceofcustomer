@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
 import httpx
 
 from app.config import AppConfig
-from app.pipeline.types import BUCKETS, CleanReview, Tag, ThemeSet
+from app.pipeline.types import BUCKETS, CleanReview, L2Assignment, Tag, ThemeSet
 
 
 @dataclass
@@ -98,6 +98,8 @@ GEMINI_PRICING_PER_MILLION = {
     }
 }
 BATCH_POLL_TIMEOUT_SECONDS = 8 * 60 * 60
+MAX_PROMPT_REVIEW_CHARS = 600
+MAX_L2_SUBTHEMES = 5
 
 
 class LLMGateway:
@@ -166,6 +168,89 @@ class LLMGateway:
                 calls=self.usage.calls,
             )
         return tags, self.usage
+
+    async def assign_l2_subthemes(self, groups: List[Tuple[str, str, List[CleanReview]]]) -> Tuple[List[L2Assignment], LLMUsage]:
+        if not groups:
+            return [], self.usage
+        if self._dev_mode:
+            assignments: List[L2Assignment] = []
+            for bucket, theme, reviews in groups:
+                assignments.extend(self._heuristic_l2_assignments(bucket, theme, reviews))
+            self.usage.total_batches = len(groups)
+            return assignments, self.usage
+        if self.provider == "gemini":
+            return await self._assign_l2_subthemes_batch(groups)
+
+        assignments = []
+        for index, group in enumerate(groups):
+            bucket, theme, reviews = group
+            await self._emit_progress(
+                "l2_sync_group_started",
+                group_index=index,
+                total_groups=len(groups),
+                bucket=bucket,
+                theme=theme,
+                review_count=len(reviews),
+            )
+            self.usage.total_batches += 1
+            try:
+                data = await self._json_call(self._l2_prompt(bucket, theme, reviews))
+                assignments.extend(self._validate_l2_assignments(data, reviews, bucket, theme))
+                await self._emit_progress("l2_sync_group_completed", group_index=index, total_groups=len(groups), quarantined=False)
+            except Exception as exc:
+                self.usage.quarantined_batches += 1
+                self.usage.malformed_retries.append({"attempt": f"l2_group_{index}", "reason": redact_llm_error(exc)})
+                assignments.extend(self._heuristic_l2_assignments(bucket, theme, reviews, quarantine=True))
+                await self._emit_progress(
+                    "l2_sync_group_completed",
+                    group_index=index,
+                    total_groups=len(groups),
+                    quarantined=True,
+                    error=redact_llm_error(exc),
+                )
+        return assignments, self.usage
+
+    async def _assign_l2_subthemes_batch(self, groups: List[Tuple[str, str, List[CleanReview]]]) -> Tuple[List[L2Assignment], LLMUsage]:
+        self.usage.path = "batch"
+        requests = []
+        for index, (bucket, theme, reviews) in enumerate(groups):
+            prompt = self._l2_prompt(bucket, theme, reviews)
+            requests.append(
+                self._generate_request(
+                    json.dumps(prompt, ensure_ascii=False),
+                    {"key": f"l2-{index}", "group_index": index, "bucket": bucket, "theme": theme},
+                )
+            )
+        await self._emit_progress("l2_batch_submit_started", total_groups=len(groups), requests=len(requests))
+        operation = await self._create_batch(requests, "voc-l2-subthemes")
+        self.usage.batch_probe = {
+            **self.usage.batch_probe,
+            "l2_operation": operation.get("name"),
+            "l2_timeout_seconds": BATCH_POLL_TIMEOUT_SECONDS,
+            "sync_fallback": False,
+        }
+        await self._emit_progress("l2_batch_submit_completed", operation=operation.get("name"), total_groups=len(groups))
+        responses = await self._poll_batch(operation.get("name", ""), timeout_seconds=BATCH_POLL_TIMEOUT_SECONDS)
+        assignments: List[L2Assignment] = []
+        self.usage.total_batches = len(groups)
+        for index, (bucket, theme, reviews) in enumerate(groups):
+            await self._emit_progress("l2_batch_parse_started", group_index=index, total_groups=len(groups), review_count=len(reviews), theme=theme)
+            try:
+                data = self._batch_response_json(responses[index])
+                assignments.extend(self._validate_l2_assignments(data, reviews, bucket, theme))
+                await self._emit_progress("l2_batch_parse_completed", group_index=index, total_groups=len(groups), quarantined=False)
+            except Exception as exc:
+                self.usage.quarantined_batches += 1
+                self.usage.malformed_retries.append({"attempt": f"l2_batch_{index}", "reason": redact_llm_error(exc)})
+                assignments.extend(self._heuristic_l2_assignments(bucket, theme, reviews, quarantine=True))
+                await self._emit_progress(
+                    "l2_batch_parse_completed",
+                    group_index=index,
+                    total_groups=len(groups),
+                    quarantined=True,
+                    error=redact_llm_error(exc),
+                )
+        return assignments, self.usage
 
     async def _classify_all_batch(self, reviews: List[CleanReview], theme_set: ThemeSet) -> Tuple[List[Tag], LLMUsage]:
         self.usage.path = "batch"
@@ -252,7 +337,7 @@ class LLMGateway:
             "buckets": list(BUCKETS),
             "max_themes_per_bucket": 10,
             "language": "Hindi/Hinglish/English allowed",
-            "reviews": [[index + 1, review.rating, review.text] for index, review in enumerate(sample)],
+            "reviews": [self._review_prompt_row(index, review) for index, review in enumerate(sample, start=1)],
             "row_format": "[row_id, rating, text]",
             "output": {"complaint": ["theme"], "feature_request": ["theme"], "praise": ["theme"]},
         }
@@ -267,10 +352,35 @@ class LLMGateway:
                 "Output compact arrays in this exact order: [row_id, bucket, theme].",
             ],
             "theme_set": theme_set,
-            "reviews": [[index + 1, review.rating, review.text] for index, review in enumerate(reviews)],
+            "reviews": [self._review_prompt_row(index, review) for index, review in enumerate(reviews, start=1)],
             "row_format": "[row_id, rating, text]",
             "output_format": "[row_id, bucket, theme]",
         }
+
+    def _l2_prompt(self, bucket: str, theme: str, reviews: List[CleanReview]) -> Dict[str, Any]:
+        return {
+            "task": "assign_l2_subthemes",
+            "parent": {"bucket": bucket, "theme": theme},
+            "rules": [
+                f"Identify up to {MAX_L2_SUBTHEMES} specific sub-issues inside this parent theme.",
+                "Use concise snake_case labels.",
+                "Assign every row exactly one l2_theme from the returned subthemes.",
+                "Avoid generic labels unless the row truly does not fit.",
+                "Return strict JSON only.",
+            ],
+            "reviews": [self._review_prompt_row(index, review) for index, review in enumerate(reviews, start=1)],
+            "row_format": "[row_id, rating, text]",
+            "output": {"subthemes": ["snake_case_label"], "assignments": [[1, "snake_case_label"]]},
+        }
+
+    def _review_prompt_row(self, row_id: int, review: CleanReview) -> List[Any]:
+        return [row_id, review.rating, self._trim_prompt_text(review.text)]
+
+    def _trim_prompt_text(self, text: str) -> str:
+        compact = " ".join((text or "").split())
+        if len(compact) <= MAX_PROMPT_REVIEW_CHARS:
+            return compact
+        return compact[:MAX_PROMPT_REVIEW_CHARS].rsplit(" ", 1)[0]
 
     def _generate_request(self, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -447,6 +557,60 @@ class LLMGateway:
             )
         return tags
 
+    def _validate_l2_assignments(self, data: Any, reviews: List[CleanReview], bucket: str, theme: str) -> List[L2Assignment]:
+        if not isinstance(data, dict):
+            raise ValueError("L2 response must be an object")
+        labels = data.get("subthemes") or data.get("labels") or []
+        if not isinstance(labels, list):
+            labels = []
+        allowed = [self._normalize_theme_label(label) for label in labels if str(label).strip()]
+        allowed = [label for index, label in enumerate(allowed) if label and label not in allowed[:index]][:MAX_L2_SUBTHEMES]
+        assignments_data = data.get("assignments") or data.get("rows") or data.get("items") or []
+        if not isinstance(assignments_data, list):
+            raise ValueError("L2 assignments must be a list")
+
+        by_row_id: Dict[int, str] = {}
+        for item in assignments_data:
+            row_id = None
+            label = ""
+            if isinstance(item, list) and len(item) >= 2:
+                row_id, label = item[0], item[1]
+            elif isinstance(item, dict):
+                row_id = item.get("row_id", item.get("id", item.get("i")))
+                label = item.get("l2_theme", item.get("subtheme", item.get("theme", "")))
+            try:
+                row_number = int(row_id)
+            except (TypeError, ValueError):
+                continue
+            normalized = self._normalize_theme_label(label)
+            if normalized:
+                by_row_id[row_number] = normalized
+
+        if not allowed:
+            allowed = [label for label in by_row_id.values() if label][:MAX_L2_SUBTHEMES]
+        if not allowed:
+            return self._heuristic_l2_assignments(bucket, theme, reviews, quarantine=True)
+
+        result: List[L2Assignment] = []
+        fallback = allowed[0]
+        allowed_set = set(allowed)
+        for index, review in enumerate(reviews, start=1):
+            label = by_row_id.get(index) or fallback
+            if label not in allowed_set:
+                if len(allowed) < MAX_L2_SUBTHEMES and label != "other":
+                    allowed.append(label)
+                    allowed_set.add(label)
+                else:
+                    label = fallback
+            result.append(L2Assignment(review_hash=review.review_hash, l2_theme=label))
+        return result
+
+    def _normalize_theme_label(self, value: Any) -> str:
+        label = str(value or "").strip().lower()
+        label = re.sub(r"[^a-z0-9]+", "_", label)
+        label = re.sub(r"_+", "_", label).strip("_")
+        return label or "other"
+
     def _parse_tag_item(self, item: Any) -> Optional[Dict[str, Any]]:
         if isinstance(item, dict):
             row_id = item.get("row_id", item.get("id", item.get("i")))
@@ -511,6 +675,28 @@ class LLMGateway:
             theme=theme,
             severity=None,
         )
+
+    def _heuristic_l2_assignments(self, bucket: str, theme: str, reviews: List[CleanReview], quarantine: bool = False) -> List[L2Assignment]:
+        rules = [
+            ("refund_not_processed", ["refund", "cashback", "return", "paise", "money"]),
+            ("payment_debited_without_service", ["debit", "deduct", "paid", "payment"]),
+            ("support_unresponsive", ["support", "customer care", "help", "ticket", "call"]),
+            ("app_crash_or_login_failure", ["crash", "login", "otp", "error", "open"]),
+            ("booking_or_delivery_delay", ["delay", "late", "slot", "booking", "delivery"]),
+            ("quality_or_professional_issue", ["quality", "clean", "professional", "staff", "maid"]),
+            ("pricing_or_hidden_charges", ["price", "charge", "fee", "cost", "expensive"]),
+        ]
+        default = "needs_manual_review" if quarantine else self._normalize_theme_label(theme)
+        assignments = []
+        for review in reviews:
+            text = review.text.lower()
+            label = default
+            for candidate, words in rules:
+                if any(word in text for word in words):
+                    label = candidate
+                    break
+            assignments.append(L2Assignment(review_hash=review.review_hash, l2_theme=label))
+        return assignments
 
     def _gloss(self, text: str) -> str:
         replacements = {

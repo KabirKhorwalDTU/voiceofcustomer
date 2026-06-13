@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import and_, cast, desc, func, or_, select, String
+from sqlalchemy import and_, cast, delete, desc, func, or_, select, String
 from sqlalchemy.orm import Session, joinedload
 
 from app.models import Company, Review, Run, RunLog, Settings, Theme
@@ -107,6 +107,66 @@ def create_run(session: Session, request: SubmitRunRequest) -> Tuple[Run, bool]:
     return run, False
 
 
+def rerun_company_from_run(session: Session, run_id: str) -> Tuple[Run, bool]:
+    source_run = get_run(session, run_id)
+    if not source_run:
+        raise KeyError("run not found")
+    company = source_run.company
+    active = session.execute(
+        select(Run)
+        .where(Run.company_id == company.id, Run.status.in_(ACTIVE_STATUSES))
+        .options(joinedload(Run.company))
+        .order_by(desc(Run.created_at))
+    ).scalars().first()
+    if active:
+        log_run_event(
+            session,
+            active,
+            stage="queue",
+            event="deduped_existing_rerun",
+            status="ok",
+            details={"reason": "company already has an active run", "source_run_id": run_id},
+        )
+        return active, True
+    settings = get_settings(session)
+    run = Run(company_id=company.id, status="queued", budget_cap=float(settings.per_run_budget_usd), company=company)
+    session.add(run)
+    session.flush()
+    log_run_event(
+        session,
+        run,
+        stage="queue",
+        event="run_requeued",
+        status="ok",
+        details={
+            "source_run_id": run_id,
+            "company_name": company.name,
+            "play_id": company.play_id,
+            "app_id": company.app_id,
+            "domain": company.domain,
+            "brand_keyword": company.brand_keyword,
+            "maps_enabled": company.maps_enabled,
+            "maps_location_hint": company.maps_location_hint,
+            "reddit_enabled": company.reddit_enabled,
+        },
+    )
+    return run, False
+
+
+def delete_run_by_id(session: Session, run_id: str) -> bool:
+    run = get_run(session, run_id)
+    if not run:
+        return False
+    if run.status in ACTIVE_STATUSES:
+        raise ValueError("active runs cannot be deleted")
+    session.execute(delete(RunLog).where(RunLog.run_id == run_id))
+    session.execute(delete(Theme).where(Theme.run_id == run_id))
+    session.execute(delete(Review).where(Review.run_id == run_id))
+    session.delete(run)
+    session.flush()
+    return True
+
+
 def list_runs(session: Session, limit: int = 250) -> List[Run]:
     return list(
         session.execute(
@@ -137,7 +197,11 @@ def query_run_reviews(
     source: str = "",
     bucket: str = "",
     theme: str = "",
+    l2_theme: str = "",
     rating: str = "",
+    review_hash: str = "",
+    date_query: str = "",
+    text_query: str = "",
     q: str = "",
 ) -> Tuple[List[Review], int]:
     page = max(page, 1)
@@ -149,11 +213,19 @@ def query_run_reviews(
         filters.append(Review.bucket == bucket)
     if theme:
         filters.append(Review.theme == theme)
+    if l2_theme:
+        filters.append(Review.l2_theme == l2_theme)
     if rating:
         try:
             filters.append(Review.rating == int(rating))
         except ValueError:
             filters.append(cast(Review.rating, String).ilike(f"%{rating}%"))
+    if review_hash:
+        filters.append(Review.review_hash.ilike(f"%{review_hash}%"))
+    if date_query:
+        filters.append(cast(Review.date, String).ilike(f"%{date_query}%"))
+    if text_query:
+        filters.append(Review.text.ilike(f"%{text_query}%"))
     if q:
         like = f"%{q}%"
         filters.append(
@@ -166,6 +238,7 @@ def query_run_reviews(
                 Review.language.ilike(like),
                 cast(Review.bucket, String).ilike(like),
                 Review.theme.ilike(like),
+                Review.l2_theme.ilike(like),
             )
         )
     total = int(session.execute(select(func.count()).select_from(Review).where(*filters)).scalar_one())

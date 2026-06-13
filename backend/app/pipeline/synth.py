@@ -95,6 +95,7 @@ def build_theme_rows(run: Run, reviews: List[Review], source_weights: Dict[str, 
         avg_recency = sum(recency_weight(review.date, recency_window_days) for review in items) / len(items)
         score = normalized_frequency * avg_recency
         top_reviews = sorted(items, key=lambda item: recency_weight(item.date, recency_window_days), reverse=True)[:3]
+        l2_subthemes = build_l2_subtheme_rows(items, recency_window_days)
         rows.append(
             Theme(
                 run_id=run.id,
@@ -106,6 +107,7 @@ def build_theme_rows(run: Run, reviews: List[Review], source_weights: Dict[str, 
                 avg_severity=round(avg_severity, 4),
                 theme_score=round(score, 6),
                 rank=0,
+                l2_subthemes=l2_subthemes,
                 top_quotes=[
                     {
                         "text": review.text,
@@ -123,6 +125,46 @@ def build_theme_rows(run: Run, reviews: List[Review], source_weights: Dict[str, 
     for index, row in enumerate(rows, start=1):
         row.rank = index
     return rows
+
+
+def build_l2_subtheme_rows(reviews: List[Review], recency_window_days: int) -> List[Dict[str, Any]]:
+    if not reviews:
+        return []
+    parent_bucket = reviews[0].bucket
+    if parent_bucket not in {"complaint", "feature_request"}:
+        return []
+    if len(reviews) < 10:
+        return []
+    grouped: Dict[str, List[Review]] = defaultdict(list)
+    for review in reviews:
+        if review.l2_theme:
+            grouped[review.l2_theme].append(review)
+    if not grouped:
+        return []
+
+    rows = []
+    parent_total = len(reviews)
+    for label, items in grouped.items():
+        top_reviews = sorted(items, key=lambda item: recency_weight(item.date, recency_window_days), reverse=True)[:3]
+        rows.append(
+            {
+                "label": label,
+                "display_label": humanize_theme(label),
+                "count": len(items),
+                "score": round(len(items) / parent_total, 4),
+                "top_quotes": [
+                    {
+                        "text": review.text,
+                        "english_gloss": review.english_gloss,
+                        "source": review.source,
+                        "rating": review.rating,
+                        "date": review.date.isoformat() if review.date else None,
+                    }
+                    for review in top_reviews
+                ],
+            }
+        )
+    return sorted(rows, key=lambda row: row["score"], reverse=True)
 
 
 def build_summary(run: Run, reviews: List[Review], themes: List[Theme]) -> Dict[str, Any]:
@@ -165,6 +207,7 @@ def build_summary(run: Run, reviews: List[Review], themes: List[Theme]) -> Dict[
                 "count": theme.count,
                 "theme_score": theme.theme_score,
                 "rank": theme.rank,
+                "l2_subthemes": theme.l2_subthemes,
             }
             for theme in themes[:10]
         ],
@@ -195,6 +238,16 @@ def build_deck_spec(company: Company, run: Run, reviews: List[Review], themes: L
         f"- {theme.rank}. {humanize_theme(theme.theme)} ({theme.bucket}): count={theme.count}, score={theme.theme_score:.3f}"
         for theme in themes[:8]
     )
+    l2_sections = []
+    for theme in [item for item in themes if item.bucket in {"complaint", "feature_request"}][:2]:
+        if not theme.l2_subthemes:
+            continue
+        lines = [
+            f"- {humanize_theme(row.get('label'))}: {int(round(float(row.get('score') or 0) * 100))}% of parent ({row.get('count')} reviews)"
+            for row in theme.l2_subthemes[:5]
+        ]
+        l2_sections.append(f"{humanize_theme(theme.theme)}\n" + "\n".join(lines))
+    l2_breakdown = "\n\n".join(l2_sections) or "- No L2 sub-theme breakdown met the 10-review threshold."
     quote_lines = []
     for theme in themes[:4]:
         if theme.top_quotes:
@@ -222,6 +275,9 @@ Bucket split: {bucket_split}
 Top themes by theme_score:
 {theme_lines or "- No themes available."}
 
+L2 breakdown for top complaint/feature themes:
+{l2_breakdown}
+
 ## Slide 3 - Representative voices
 
 {quotes}
@@ -246,6 +302,7 @@ def reviews_to_records(reviews: List[Review]) -> List[Dict[str, Any]]:
             "english_gloss": review.english_gloss,
             "bucket": review.bucket,
             "theme": review.theme,
+            "l2_theme": review.l2_theme,
             "severity": review.severity,
             "representative_flag": review.representative_flag,
         }
@@ -269,6 +326,7 @@ def export_reviews(reviews: List[Review], fmt: str) -> Tuple[bytes, str, str]:
             "english_gloss",
             "bucket",
             "theme",
+            "l2_theme",
             "severity",
             "representative_flag",
         ]
@@ -288,6 +346,7 @@ def export_reviews(reviews: List[Review], fmt: str) -> Tuple[bytes, str, str]:
             "english_gloss",
             "bucket",
             "theme",
+            "l2_theme",
             "severity",
             "representative_flag",
         ]

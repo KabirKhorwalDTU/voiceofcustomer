@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Clipboard, Download, ExternalLink, Search } from "lucide-react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { ArrowLeft, ChevronDown, ChevronRight, Clipboard, Download, ExternalLink, RotateCcw } from "lucide-react";
 import { ResultsCharts } from "../components/Charts";
 import { StatusBadge } from "../components/StatusBadge";
 import { api, Results, ReviewPage, RunLog } from "../lib/api";
@@ -8,23 +8,38 @@ import { api, Results, ReviewPage, RunLog } from "../lib/api";
 const ACTIVE = new Set(["queued", "scraping", "classifying"]);
 
 type ReviewFilters = {
-  q: string;
+  review_hash: string;
   source: string;
   bucket: string;
   theme: string;
+  l2_theme: string;
   rating: string;
+  date_query: string;
+  text_query: string;
 };
 
-const emptyFilters: ReviewFilters = { q: "", source: "", bucket: "", theme: "", rating: "" };
+const emptyFilters: ReviewFilters = {
+  review_hash: "",
+  source: "",
+  bucket: "",
+  theme: "",
+  l2_theme: "",
+  rating: "",
+  date_query: "",
+  text_query: "",
+};
 
 export function ResultsPage() {
   const { runId } = useParams();
+  const navigate = useNavigate();
   const [results, setResults] = useState<Results | null>(null);
   const [reviewPage, setReviewPage] = useState<ReviewPage | null>(null);
   const [filters, setFilters] = useState<ReviewFilters>(emptyFilters);
+  const [expandedThemes, setExpandedThemes] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [copied, setCopied] = useState(false);
+  const [rerunning, setRerunning] = useState(false);
   const [error, setError] = useState("");
 
   async function loadResults() {
@@ -45,7 +60,19 @@ export function ResultsPage() {
 
   useEffect(() => {
     loadReviews().catch((err) => setError(err.message));
-  }, [runId, page, pageSize, filters.q, filters.source, filters.bucket, filters.theme, filters.rating]);
+  }, [
+    runId,
+    page,
+    pageSize,
+    filters.review_hash,
+    filters.source,
+    filters.bucket,
+    filters.theme,
+    filters.l2_theme,
+    filters.rating,
+    filters.date_query,
+    filters.text_query,
+  ]);
 
   useEffect(() => {
     if (!results || !ACTIVE.has(results.run.status)) return;
@@ -64,15 +91,62 @@ export function ResultsPage() {
   const sourceOptions = useMemo(() => Object.keys(results?.summary.source_mix || {}).sort(), [results]);
   const bucketOptions = useMemo(() => Object.keys(results?.summary.bucket_split || {}).sort(), [results]);
   const themeOptions = useMemo(() => (results?.themes || []).map((theme) => theme.theme), [results]);
+  const l2Options = useMemo(() => {
+    const values = new Set<string>();
+    (results?.themes || []).forEach((theme) => {
+      (theme.l2_subthemes || []).forEach((row) => values.add(row.label));
+    });
+    return Array.from(values).sort();
+  }, [results]);
   const ratingOptions = useMemo(() => Object.keys(results?.summary.rating_distribution || {}).sort(), [results]);
 
   const geminiUsage = useMemo(() => rollupLogs(results?.logs || [], "gemini"), [results]);
   const apifyUsage = useMemo(() => rollupLogs(results?.logs || [], "apify"), [results]);
   const trackedCost = Math.max(results?.run.cost_estimate || 0, geminiUsage.cost + apifyUsage.cost);
+  const topTheme = results?.themes?.[0];
+  const deckPreview = useMemo(() => {
+    const lines = (results?.deck_spec || "").split("\n").filter((line) => line.trim() && !line.startsWith("#"));
+    return lines.slice(0, 4).join(" ");
+  }, [results?.deck_spec]);
 
   function updateFilter(key: keyof ReviewFilters, value: string) {
     setPage(1);
     setFilters((current) => ({ ...current, [key]: value }));
+  }
+
+  useEffect(() => {
+    if (!results) return;
+    const defaults = results.themes
+      .filter((theme) => theme.l2_subthemes?.length)
+      .slice(0, 2)
+      .map((theme) => theme.id);
+    setExpandedThemes(new Set(defaults));
+  }, [results?.run.id]);
+
+  function toggleTheme(themeId: string) {
+    setExpandedThemes((current) => {
+      const next = new Set(current);
+      if (next.has(themeId)) {
+        next.delete(themeId);
+      } else {
+        next.add(themeId);
+      }
+      return next;
+    });
+  }
+
+  async function rerunCurrent() {
+    if (!results) return;
+    setRerunning(true);
+    setError("");
+    try {
+      const response = await api.rerun(results.run.id);
+      navigate(`/runs/${response.run.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not start rerun");
+    } finally {
+      setRerunning(false);
+    }
   }
 
   if (error) {
@@ -93,6 +167,10 @@ export function ResultsPage() {
         </div>
         <div className="header-metrics">
           <StatusBadge status={results.run.status} />
+          <button className="secondary-button" onClick={rerunCurrent} disabled={rerunning} title="Queue a fresh run for this company">
+            <RotateCcw size={16} />
+            Rerun
+          </button>
           <Link to="/" className="icon-button" title="Back to dashboard">
             <ArrowLeft size={18} />
           </Link>
@@ -119,6 +197,41 @@ export function ResultsPage() {
       {disabled.length ? <section className="banner muted-banner">Disabled sources: {disabled.map(([source]) => source).join(", ")}</section> : null}
       {lowConfidence ? <section className="banner danger">Low confidence: {Math.round(results.run.quarantine_rate * 100)}% of LLM batches were quarantined.</section> : null}
 
+      <section className="insight-grid">
+        <div className="insight-card">
+          <p className="eyebrow">Insight Synthesis</p>
+          <h2>{topTheme ? `Top signal: ${humanizeTheme(topTheme.theme)}` : "Waiting for classified themes"}</h2>
+          <p>
+            {topTheme
+              ? `${topTheme.count} selected reviews in ${topTheme.bucket.replace("_", " ")}. Score ${Number(topTheme.theme_score || 0).toFixed(3)}.`
+              : "The run will summarize the strongest signal once classification completes."}
+          </p>
+          {topTheme?.l2_subthemes?.length ? (
+            <div className="insight-l2-line">
+              {topTheme.l2_subthemes.slice(0, 3).map((row) => (
+                <span key={row.label}>{humanizeTheme(row.label)} {Math.round(Number(row.score || 0) * 100)}%</span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        <div className="deck-mini">
+          <div className="section-title-row">
+            <h2>Deck Spec</h2>
+            <button
+              className="secondary-button"
+              onClick={async () => {
+                await navigator.clipboard.writeText(results.deck_spec);
+                setCopied(true);
+              }}
+            >
+              <Clipboard size={15} />
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+          <p>{deckPreview || "Deck-spec will appear after synthesis."}</p>
+        </div>
+      </section>
+
       <section className="stats-grid results-stats">
         <Metric label="Selected reviews" value={String(results.summary.total_reviews || 0)} note="1/2/3-star rated sources, plus Reddit only if enabled" />
         <Metric label="Date range" value={`${results.summary.date_range?.start || "n/a"} to ${results.summary.date_range?.end || "n/a"}`} />
@@ -126,6 +239,8 @@ export function ResultsPage() {
         <Metric label="Gemini tokens" value={geminiUsage.tokens.toLocaleString("en-IN")} note={`${geminiUsage.calls} logged calls`} />
         <Metric label="Dedup / quarantine" value={`${Math.round(results.run.dedup_ratio * 100)}% / ${Math.round(results.run.quarantine_rate * 100)}%`} />
       </section>
+
+      <ThemeDensityPanel results={results} expandedThemes={expandedThemes} onToggle={toggleTheme} />
 
       <ResultsCharts results={results} />
 
@@ -175,11 +290,10 @@ export function ResultsPage() {
             <h2>Tagged Reviews</h2>
             <p>{reviewPage?.total || 0} rows · page {reviewPage?.page || 1} of {reviewPage?.pages || 1}</p>
           </div>
-          <label className="search-box wide-search">
-            <Search size={15} />
-            <input value={filters.q} onChange={(event) => updateFilter("q", event.target.value)} placeholder="Search every column..." />
-          </label>
           <div className="download-row">
+            <button className="secondary-button" type="button" onClick={() => { setFilters(emptyFilters); setPage(1); }}>
+              Clear filters
+            </button>
             {(["xlsx", "csv", "json"] as const).map((fmt) => (
               <a className="secondary-button" href={api.downloadUrl(results.run.id, fmt)} key={fmt}>
                 <Download size={15} />
@@ -189,11 +303,7 @@ export function ResultsPage() {
           </div>
         </div>
 
-        <div className="column-filter-row">
-          <Select label="Source" value={filters.source} options={sourceOptions} onChange={(value) => updateFilter("source", value)} />
-          <Select label="Rating" value={filters.rating} options={ratingOptions} onChange={(value) => updateFilter("rating", value)} />
-          <Select label="Bucket" value={filters.bucket} options={bucketOptions} onChange={(value) => updateFilter("bucket", value)} />
-          <Select label="Theme" value={filters.theme} options={themeOptions} display={humanizeTheme} onChange={(value) => updateFilter("theme", value)} />
+        <div className="column-filter-row rows-only-filter">
           <label>
             Rows / page
             <select value={pageSize} onChange={(event) => { setPage(1); setPageSize(Number(event.target.value)); }}>
@@ -212,7 +322,18 @@ export function ResultsPage() {
                 <th>Date</th>
                 <th>Bucket</th>
                 <th>Theme</th>
+                <th>L2</th>
                 <th>Review</th>
+              </tr>
+              <tr className="column-search-row">
+                <th><ColumnInput value={filters.review_hash} placeholder="Hash" onChange={(value) => updateFilter("review_hash", value)} /></th>
+                <th><InlineSelect value={filters.source} options={sourceOptions} onChange={(value) => updateFilter("source", value)} /></th>
+                <th><InlineSelect value={filters.rating} options={ratingOptions} onChange={(value) => updateFilter("rating", value)} /></th>
+                <th><ColumnInput value={filters.date_query} placeholder="YYYY-MM" onChange={(value) => updateFilter("date_query", value)} /></th>
+                <th><InlineSelect value={filters.bucket} options={bucketOptions} onChange={(value) => updateFilter("bucket", value)} /></th>
+                <th><InlineSelect value={filters.theme} options={themeOptions} display={humanizeTheme} onChange={(value) => updateFilter("theme", value)} /></th>
+                <th><InlineSelect value={filters.l2_theme} options={l2Options} display={humanizeTheme} onChange={(value) => updateFilter("l2_theme", value)} /></th>
+                <th><ColumnInput value={filters.text_query} placeholder="Search review text" onChange={(value) => updateFilter("text_query", value)} /></th>
               </tr>
             </thead>
             <tbody>
@@ -224,11 +345,12 @@ export function ResultsPage() {
                   <td>{review.date || "n/a"}</td>
                   <td>{review.bucket || "pending"}</td>
                   <td>{humanizeTheme(review.theme)}</td>
+                  <td>{humanizeTheme(review.l2_theme)}</td>
                   <td className="review-text">{review.text}</td>
                 </tr>
               ))}
               {!reviewPage?.items?.length ? (
-                <tr><td colSpan={7}>No reviews match these filters.</td></tr>
+                <tr><td colSpan={8}>No reviews match these filters.</td></tr>
               ) : null}
             </tbody>
           </table>
@@ -285,17 +407,84 @@ function Metric({ label, value, note = "" }: { label: string; value: string; not
   );
 }
 
-function Select({ label, value, options, display, onChange }: { label: string; value: string; options: string[]; display?: (value: string) => string; onChange: (value: string) => void }) {
+function ThemeDensityPanel({
+  results,
+  expandedThemes,
+  onToggle,
+}: {
+  results: Results;
+  expandedThemes: Set<string>;
+  onToggle: (themeId: string) => void;
+}) {
+  const themes = results.themes.slice(0, 8);
+  const maxScore = Math.max(...themes.map((theme) => Number(theme.theme_score || 0)), 0.001);
+  const l2Count = themes.reduce((total, theme) => total + (theme.l2_subthemes?.length || 0), 0);
+
   return (
-    <label>
-      {label}
-      <select value={value} onChange={(event) => onChange(event.target.value)}>
-        <option value="">All</option>
-        {options.map((option) => (
-          <option value={option} key={option}>{display ? display(option) : option}</option>
-        ))}
-      </select>
-    </label>
+    <section className="section-block density-panel">
+      <div className="section-title-row">
+        <div>
+          <h2>Thematic Density</h2>
+          <p>L1 themes by score with L2 sub-issues expanded for complaint and feature-request parents.</p>
+        </div>
+        <div className="density-badge">{l2Count} L2 sub-themes</div>
+      </div>
+      <div className="density-list">
+        {themes.map((theme) => {
+          const expanded = expandedThemes.has(theme.id);
+          const hasL2 = Boolean(theme.l2_subthemes?.length);
+          const scorePct = Math.max(2, Math.round((Number(theme.theme_score || 0) / maxScore) * 100));
+          return (
+            <div className="density-row" key={theme.id}>
+              <button className="density-main" type="button" onClick={() => hasL2 && onToggle(theme.id)} disabled={!hasL2}>
+                <span className="density-label">{humanizeTheme(theme.theme)}</span>
+                <span className={`bucket-chip bucket-${theme.bucket}`}>{theme.bucket.replace("_", " ")}</span>
+                <span className="density-bar" aria-hidden="true">
+                  <span style={{ width: `${scorePct}%` }} />
+                </span>
+                <span className="density-impact">{theme.count} rows · score {Number(theme.theme_score || 0).toFixed(3)}</span>
+                {hasL2 ? (expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />) : <span className="density-empty">No L2</span>}
+              </button>
+              {expanded && hasL2 ? (
+                <div className="l2-stack">
+                  {theme.l2_subthemes.slice(0, 5).map((row) => {
+                    const quote = row.top_quotes?.[0]?.text;
+                    return (
+                      <div className="l2-row" key={row.label}>
+                        <div className="l2-row-top">
+                          <span>{humanizeTheme(row.label)}</span>
+                          <strong>{Math.round(Number(row.score || 0) * 100)}%</strong>
+                        </div>
+                        <div className="l2-track">
+                          <span style={{ width: `${Math.max(3, Math.round(Number(row.score || 0) * 100))}%` }} />
+                        </div>
+                        {quote ? <p>"{String(quote).slice(0, 150)}"</p> : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+        {!themes.length ? <div className="empty-slab">No themes yet.</div> : null}
+      </div>
+    </section>
+  );
+}
+
+function ColumnInput({ value, placeholder, onChange }: { value: string; placeholder: string; onChange: (value: string) => void }) {
+  return <input className="column-search-input" value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />;
+}
+
+function InlineSelect({ value, options, display, onChange }: { value: string; options: string[]; display?: (value: string) => string; onChange: (value: string) => void }) {
+  return (
+    <select className="column-search-input" value={value} onChange={(event) => onChange(event.target.value)}>
+      <option value="">All</option>
+      {options.map((option) => (
+        <option value={option} key={option}>{display ? display(option) : option}</option>
+      ))}
+    </select>
   );
 }
 

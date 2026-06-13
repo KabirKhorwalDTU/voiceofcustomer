@@ -128,6 +128,38 @@ def test_gemini_classification_prompt_is_slim():
     assert "review_hash" not in json.dumps(prompt)
 
 
+def test_gemini_l2_prompt_is_slim():
+    review = CleanReview(source="play", review_hash="hash-1", text="Payment failed and refund not processed", date=date.today(), rating=1, language="en")
+    gateway = LLMGateway(get_config(), TestSettings())
+
+    prompt = gateway._l2_prompt("complaint", "payments_or_refunds", [review])
+
+    assert prompt["reviews"] == [[1, 1, "Payment failed and refund not processed"]]
+    assert prompt["row_format"] == "[row_id, rating, text]"
+    assert prompt["output"] == {"subthemes": ["snake_case_label"], "assignments": [[1, "snake_case_label"]]}
+    serialized = json.dumps(prompt)
+    assert "review_hash" not in serialized
+    assert "severity" not in serialized
+    assert "english_gloss" not in serialized
+    assert "source" not in serialized
+    assert "date" not in serialized
+
+
+def test_gateway_validates_l2_assignments_from_compact_arrays():
+    review = CleanReview(source="play", review_hash="hash-1", text="Payment failed", date=date.today(), rating=1, language="en")
+    gateway = LLMGateway(get_config(), TestSettings())
+
+    assignments = gateway._validate_l2_assignments(
+        {"subthemes": ["refund_not_processed"], "assignments": [[1, "refund_not_processed"]]},
+        [review],
+        "complaint",
+        "payments_or_refunds",
+    )
+
+    assert assignments[0].review_hash == "hash-1"
+    assert assignments[0].l2_theme == "refund_not_processed"
+
+
 def test_gemini_sync_cost_uses_flash_lite_token_pricing():
     gateway = LLMGateway(get_config(), TestSettings())
 

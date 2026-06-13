@@ -37,4 +37,10 @@ class Tag:
     severity: Optional[int] = None
 
 
+@dataclass
+class L2Assignment:
+    review_hash: str
+    l2_theme: str
+
+
 ThemeSet = Dict[str, List[str]]

@@ -1,4 +1,5 @@
 import asyncio
+from collections import defaultdict
 from typing import Dict, List, Optional
 
 from sqlalchemy import delete, select
@@ -36,6 +37,40 @@ def is_analysis_candidate(review: CleanReview) -> bool:
     if review.source == "reddit":
         return True
     return review.rating in {1, 2, 3}
+
+
+def l2_candidate_groups(rows: List[Review]) -> List[tuple[str, str, List[CleanReview]]]:
+    grouped: Dict[tuple[str, str], List[Review]] = defaultdict(list)
+    for row in rows:
+        if row.bucket not in {"complaint", "feature_request"}:
+            continue
+        if not row.theme:
+            continue
+        grouped[(row.bucket, row.theme)].append(row)
+
+    groups: List[tuple[str, str, List[CleanReview]]] = []
+    for (bucket, theme), items in grouped.items():
+        if len(items) < 10:
+            continue
+        groups.append(
+            (
+                bucket,
+                theme,
+                [
+                    CleanReview(
+                        source=item.source,
+                        review_hash=item.review_hash,
+                        text=item.text,
+                        date=item.date,
+                        rating=item.rating,
+                        language=item.language,
+                    )
+                    for item in items
+                ],
+            )
+        )
+    groups.sort(key=lambda item: len(item[2]), reverse=True)
+    return groups
 
 
 class Worker:
@@ -244,6 +279,7 @@ class Worker:
                         english_gloss=reused.english_gloss if reused else None,
                         bucket=reused.bucket if reused else None,
                         theme=reused.theme if reused else None,
+                        l2_theme=reused.l2_theme if reused else None,
                         severity=reused.severity if reused else None,
                     )
                     session.add(row)
@@ -264,22 +300,25 @@ class Worker:
                     },
                 )
 
-            async def log_llm_progress(event: Dict[str, object]) -> None:
-                with session_scope() as progress_session:
-                    progress_run = progress_session.get(Run, run_id)
-                    if progress_run:
-                        log_run_event(
-                            progress_session,
-                            progress_run,
-                            stage="classification",
-                            event="llm_batch_progress",
-                            status="info",
-                            provider=settings.provider,
-                            model=settings.model,
-                            details=event,
-                        )
+            def make_llm_progress_logger(stage: str):
+                async def log_llm_progress(event: Dict[str, object]) -> None:
+                    with session_scope() as progress_session:
+                        progress_run = progress_session.get(Run, run_id)
+                        if progress_run:
+                            log_run_event(
+                                progress_session,
+                                progress_run,
+                                stage=stage,
+                                event="llm_batch_progress",
+                                status="info",
+                                provider=settings.provider,
+                                model=settings.model,
+                                details=event,
+                            )
 
-            gateway = LLMGateway(config, settings, progress_callback=log_llm_progress)
+                return log_llm_progress
+
+            gateway = LLMGateway(config, settings, progress_callback=make_llm_progress_logger("classification"))
             with session_scope() as session:
                 run = session.get(Run, run_id)
                 if run is None:
@@ -353,11 +392,15 @@ class Worker:
                         row.bucket = tag.bucket
                         row.theme = tag.theme if tag.theme in theme_set.get(tag.bucket, []) else "other"
                         row.severity = tag.severity
+                        row.l2_theme = None
                     elif row.bucket and row.theme and row.theme not in theme_set.get(row.bucket, []):
                         row.theme = "other"
+                        row.l2_theme = None
 
                 run.cost_estimate = round(float(run.cost_estimate or 0) + usage.cost_usd, 4)
-                run.quarantine_rate = min(1, usage.quarantined_batches / usage.total_batches) if usage.total_batches else 0
+                l1_total_batches = usage.total_batches
+                l1_quarantined_batches = usage.quarantined_batches
+                run.quarantine_rate = min(1, l1_quarantined_batches / l1_total_batches) if l1_total_batches else 0
                 log_run_event(
                     session,
                     run,
@@ -381,7 +424,8 @@ class Worker:
                         "tagged_reviews": len(tags),
                     },
                 )
-                if run.cost_estimate > float(settings.per_run_budget_usd):
+                over_budget_after_l1 = run.cost_estimate > float(settings.per_run_budget_usd)
+                if over_budget_after_l1:
                     log_run_event(
                         session,
                         run,
@@ -392,6 +436,112 @@ class Worker:
                         details={"budget_cap": float(settings.per_run_budget_usd)},
                     )
                     set_run_status(session, run, "partial", "Budget cap exceeded after LLM processing")
+                    l2_groups = []
+                else:
+                    l2_groups = l2_candidate_groups(rows)
+                    log_run_event(
+                        session,
+                        run,
+                        stage="l2_subthemes",
+                        event="stage_started",
+                        status="ok",
+                        provider=settings.provider,
+                        model=settings.model,
+                        details={
+                            "eligible_parent_themes": len(l2_groups),
+                            "min_parent_reviews": 10,
+                            "buckets": ["complaint", "feature_request"],
+                            "review_count": sum(len(group[2]) for group in l2_groups),
+                        },
+                    )
+
+            l2_usage = None
+            if l2_groups:
+                l2_gateway = LLMGateway(config, settings, progress_callback=make_llm_progress_logger("l2_subthemes"))
+                try:
+                    l2_assignments, l2_usage = await asyncio.wait_for(
+                        l2_gateway.assign_l2_subthemes(l2_groups),
+                        timeout=BATCH_POLL_TIMEOUT_SECONDS + 600 if settings.provider == "gemini" else max(3600, len(l2_groups) * 180),
+                    )
+                except asyncio.TimeoutError:
+                    l2_usage = l2_gateway.usage
+                    l2_usage.path = f"{l2_usage.path}_timeout_heuristic_fallback"
+                    l2_usage.total_batches = len(l2_groups)
+                    l2_usage.quarantined_batches = len(l2_groups)
+                    l2_usage.malformed_retries.append(
+                        {
+                            "attempt": "l2_timeout",
+                            "reason": f"L2 sub-theme assignment exceeded timeout and fell back to heuristics",
+                        }
+                    )
+                    l2_assignments = []
+                    for bucket, theme, reviews in l2_groups:
+                        l2_assignments.extend(l2_gateway._heuristic_l2_assignments(bucket, theme, reviews, quarantine=True))
+                l2_map = {assignment.review_hash: assignment.l2_theme for assignment in l2_assignments}
+            else:
+                l2_map = {}
+
+            with session_scope() as session:
+                run = session.get(Run, run_id)
+                if run is None:
+                    return
+                rows = list(session.execute(select(Review).where(Review.run_id == run.id)).scalars())
+                for row in rows:
+                    row.l2_theme = l2_map.get(row.review_hash)
+
+                if l2_usage is not None:
+                    run.cost_estimate = round(float(run.cost_estimate or 0) + l2_usage.cost_usd, 4)
+                    total_batches = l1_total_batches + l2_usage.total_batches
+                    quarantined_batches = l1_quarantined_batches + l2_usage.quarantined_batches
+                    run.quarantine_rate = min(1, quarantined_batches / total_batches) if total_batches else 0
+                    log_run_event(
+                        session,
+                        run,
+                        stage="l2_subthemes",
+                        event="stage_completed",
+                        status="ok" if l2_usage.quarantined_batches == 0 else "partial",
+                        provider=settings.provider,
+                        model=settings.model,
+                        cost_usd=l2_usage.cost_usd,
+                        input_tokens=l2_usage.input_tokens,
+                        output_tokens=l2_usage.output_tokens,
+                        total_tokens=l2_usage.total_tokens,
+                        details={
+                            "path": l2_usage.path,
+                            "batch_probe": l2_usage.batch_probe,
+                            "total_batches": l2_usage.total_batches,
+                            "quarantined_batches": l2_usage.quarantined_batches,
+                            "malformed_retries": l2_usage.malformed_retries,
+                            "progress_events": l2_usage.progress_events[-50:],
+                            "assigned_reviews": len(l2_map),
+                            "eligible_parent_themes": len(l2_groups),
+                        },
+                    )
+                else:
+                    log_run_event(
+                        session,
+                        run,
+                        stage="l2_subthemes",
+                        event="stage_skipped",
+                        status="ok",
+                        details={
+                            "reason": "No complaint or feature_request parent themes with at least 10 reviews, or budget exceeded before L2.",
+                            "eligible_parent_themes": len(l2_groups),
+                        },
+                    )
+
+                if run.cost_estimate > float(settings.per_run_budget_usd):
+                    log_run_event(
+                        session,
+                        run,
+                        stage="budget",
+                        event="budget_exceeded",
+                        status="partial",
+                        cost_usd=float(run.cost_estimate),
+                        details={"budget_cap": float(settings.per_run_budget_usd)},
+                    )
+                    set_run_status(session, run, "partial", "Budget cap exceeded after L2 processing")
+
                 session.execute(delete(Theme).where(Theme.run_id == run.id))
                 session.flush()
                 rows = list(session.execute(select(Review).where(Review.run_id == run.id)).scalars())

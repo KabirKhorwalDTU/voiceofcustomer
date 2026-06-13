@@ -70,6 +70,7 @@ class ReviewOut(BaseModel):
     english_gloss: Optional[str] = None
     bucket: Optional[str] = None
     theme: Optional[str] = None
+    l2_theme: Optional[str] = None
     severity: Optional[int] = None
     representative_flag: bool
 
@@ -94,6 +95,7 @@ class ThemeOut(BaseModel):
     theme_score: float
     rank: int
     top_quotes: List[Dict[str, Any]]
+    l2_subthemes: List[Dict[str, Any]] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 

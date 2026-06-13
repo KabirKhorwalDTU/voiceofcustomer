@@ -72,6 +72,7 @@ create table if not exists reviews (
     english_gloss text,
     bucket review_bucket,
     theme text,
+    l2_theme text,
     severity integer,
     representative_flag boolean not null default false,
     created_at timestamptz not null default now(),
@@ -82,6 +83,7 @@ create table if not exists reviews (
 
 create index if not exists reviews_run_idx on reviews(run_id);
 create index if not exists reviews_company_theme_idx on reviews(company_id, theme);
+create index if not exists reviews_l2_theme_idx on reviews(l2_theme);
 create index if not exists reviews_source_idx on reviews(source);
 create index if not exists reviews_company_hash_idx on reviews(company_id, review_hash);
 
@@ -97,6 +99,7 @@ create table if not exists themes (
     theme_score numeric(10, 6) not null default 0,
     rank integer not null,
     top_quotes jsonb not null default '[]'::jsonb,
+    l2_subthemes jsonb not null default '[]'::jsonb,
     created_at timestamptz not null default now()
 );
 
@@ -145,3 +148,5 @@ values (1)
 on conflict (id) do nothing;
 
 alter table companies add column if not exists reddit_enabled boolean not null default false;
+alter table reviews add column if not exists l2_theme text;
+alter table themes add column if not exists l2_subthemes jsonb not null default '[]'::jsonb;

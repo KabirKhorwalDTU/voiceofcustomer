@@ -1,6 +1,6 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import { ArrowDownToLine, BarChart3, Check, Clock3, Database, IndianRupee, Plus, Search, Send, X } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { ArrowDownToLine, BarChart3, Check, Clock3, Database, IndianRupee, Plus, RotateCcw, Search, Send, Trash2, X } from "lucide-react";
 import { api, Run } from "../lib/api";
 import { StatusBadge } from "../components/StatusBadge";
 
@@ -28,9 +28,11 @@ const ACTIVE = new Set(["queued", "scraping", "classifying"]);
 const HISTORY_PAGE_SIZE = 25;
 
 export function Dashboard() {
+  const navigate = useNavigate();
   const [draft, setDraft] = useState<DraftCompany>(emptyDraft());
   const [runs, setRuns] = useState<Run[]>([]);
   const [busy, setBusy] = useState(false);
+  const [actionRunId, setActionRunId] = useState("");
   const [error, setError] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -92,6 +94,40 @@ export function Dashboard() {
       setError(err instanceof Error ? err.message : "Could not submit run");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function rerun(run: Run) {
+    setActionRunId(run.id);
+    setError("");
+    try {
+      const response = await api.rerun(run.id);
+      await loadRuns();
+      navigate(`/runs/${response.run.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not queue rerun");
+    } finally {
+      setActionRunId("");
+    }
+  }
+
+  async function deleteRun(run: Run) {
+    if (ACTIVE.has(run.status)) {
+      setError("Active runs cannot be deleted.");
+      return;
+    }
+    if (!window.confirm(`Delete run for ${run.company?.name || run.company_id}? This removes this run's reviews, themes, and logs.`)) {
+      return;
+    }
+    setActionRunId(run.id);
+    setError("");
+    try {
+      await api.deleteRun(run.id);
+      await loadRuns();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete run");
+    } finally {
+      setActionRunId("");
     }
   }
 
@@ -171,11 +207,12 @@ export function Dashboard() {
                 <th>Cost</th>
                 <th>Quarantine</th>
                 <th>Completed</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {pagedRuns.map((run) => (
-                <tr key={run.id} onClick={() => (window.location.href = `/runs/${run.id}`)}>
+                <tr key={run.id} onClick={() => navigate(`/runs/${run.id}`)}>
                   <td className="mono">RN-{run.id.slice(0, 5).toUpperCase()}</td>
                   <td>
                     <strong>{run.company?.name || run.company_id}</strong>
@@ -187,11 +224,21 @@ export function Dashboard() {
                   <td>{formatInr(run.cost_estimate)}</td>
                   <td>{Math.round(run.quarantine_rate * 100)}%</td>
                   <td>{run.finished_at ? new Date(run.finished_at).toLocaleString() : "In progress"}</td>
+                  <td>
+                    <div className="row-actions" onClick={(event) => event.stopPropagation()}>
+                      <button className="icon-button tiny-action" title="Rerun company" disabled={actionRunId === run.id} onClick={() => rerun(run)}>
+                        <RotateCcw size={15} />
+                      </button>
+                      <button className="icon-button tiny-action danger-action" title="Delete run" disabled={ACTIVE.has(run.status) || actionRunId === run.id} onClick={() => deleteRun(run)}>
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
               {!filteredRuns.length ? (
                 <tr>
-                  <td colSpan={8}>No matching runs.</td>
+                  <td colSpan={9}>No matching runs.</td>
                 </tr>
               ) : null}
             </tbody>

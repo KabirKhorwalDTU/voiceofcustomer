@@ -11,7 +11,20 @@ from app.config import get_config
 from app.db import init_db, session_scope
 from app.pipeline.synth import build_deck_spec, build_summary, export_reviews
 from app.pipeline.worker import worker
-from app.repository import create_run, get_company_runs, get_latest_run_log, get_run, get_run_logs, get_run_results, get_settings, list_runs, query_run_reviews, update_settings
+from app.repository import (
+    create_run,
+    delete_run_by_id,
+    get_company_runs,
+    get_latest_run_log,
+    get_run,
+    get_run_logs,
+    get_run_results,
+    get_settings,
+    list_runs,
+    query_run_reviews,
+    rerun_company_from_run,
+    update_settings,
+)
 from app.schemas import ResultsOut, ReviewPageOut, RunLogOut, RunOut, SettingsOut, SettingsUpdate, SubmitRunRequest, SubmitRunResponse
 
 
@@ -88,6 +101,29 @@ def run_status(run_id: str) -> RunOut:
         return run_out(session, run)
 
 
+@app.post("/api/runs/{run_id}/rerun", response_model=SubmitRunResponse)
+def rerun(run_id: str) -> SubmitRunResponse:
+    with session_scope() as session:
+        try:
+            run, existing = rerun_company_from_run(session, run_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="run not found") from None
+        session.flush()
+        return SubmitRunResponse(run=run_out(session, run), deduped_existing=existing)
+
+
+@app.delete("/api/runs/{run_id}", status_code=204)
+def delete_run(run_id: str) -> Response:
+    with session_scope() as session:
+        try:
+            deleted = delete_run_by_id(session, run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        if not deleted:
+            raise HTTPException(status_code=404, detail="run not found")
+    return Response(status_code=204)
+
+
 @app.get("/api/companies/{company_id}/runs", response_model=List[RunOut])
 def company_runs(company_id: str) -> List[RunOut]:
     with session_scope() as session:
@@ -121,13 +157,31 @@ def run_reviews(
     source: str = "",
     bucket: str = "",
     theme: str = "",
+    l2_theme: str = "",
     rating: str = "",
+    review_hash: str = "",
+    date_query: str = "",
+    text_query: str = "",
     q: str = "",
 ) -> ReviewPageOut:
     with session_scope() as session:
         if not get_run(session, run_id):
             raise HTTPException(status_code=404, detail="run not found")
-        rows, total = query_run_reviews(session, run_id, page=page, page_size=page_size, source=source, bucket=bucket, theme=theme, rating=rating, q=q)
+        rows, total = query_run_reviews(
+            session,
+            run_id,
+            page=page,
+            page_size=page_size,
+            source=source,
+            bucket=bucket,
+            theme=theme,
+            l2_theme=l2_theme,
+            rating=rating,
+            review_hash=review_hash,
+            date_query=date_query,
+            text_query=text_query,
+            q=q,
+        )
         return ReviewPageOut(items=rows, total=total, page=page, page_size=page_size, pages=max(1, math.ceil(total / page_size)))
 
 
@@ -201,6 +255,7 @@ def stage_label(status: str, stage: str, event: str) -> str:
         "cleaning": "Cleaning & low-rating selection",
         "theme_discovery": "Discovering themes",
         "classification": "Classifying with Gemini Batch",
+        "l2_subthemes": "Finding L2 sub-themes",
         "synthesis": "Synthesizing results",
         "budget": "Checking budget",
         "terminal": "Finalizing",
@@ -220,6 +275,7 @@ def stage_progress(status: str, stage: str) -> float:
         "cleaning": 0.34,
         "theme_discovery": 0.48,
         "classification": 0.68,
+        "l2_subthemes": 0.78,
         "synthesis": 0.88,
         "budget": 0.92,
         "terminal": 0.96,

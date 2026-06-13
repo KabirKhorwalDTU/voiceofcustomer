@@ -38,6 +38,7 @@ def sample_objects():
         english_gloss="Money was debited but payment was not received",
         bucket="complaint",
         theme="payments_or_refunds",
+        l2_theme="refund_not_processed",
         severity=3,
         representative_flag=True,
     )
@@ -61,6 +62,15 @@ def sample_objects():
                 "date": review.date.isoformat(),
             }
         ],
+        l2_subthemes=[
+            {
+                "label": "refund_not_processed",
+                "display_label": "Refunds: not processed.",
+                "count": 1,
+                "score": 1,
+                "top_quotes": [{"text": review.text, "source": review.source, "rating": review.rating}],
+            }
+        ],
     )
     return company, run, [review], [theme]
 
@@ -81,12 +91,14 @@ def test_tagged_reviews_json_matches_contract_a_keys():
         "english_gloss",
         "bucket",
         "theme",
+        "l2_theme",
         "severity",
         "representative_flag",
     }
     assert payload[0]["source"] == "play"
     assert payload[0]["bucket"] == "complaint"
     assert payload[0]["severity"] == 3
+    assert payload[0]["l2_theme"] == "refund_not_processed"
 
 
 def test_deck_spec_emits_frozen_contract_b_slides():
@@ -98,6 +110,8 @@ def test_deck_spec_emits_frozen_contract_b_slides():
     assert "## Slide 3 - Representative voices" in deck
     assert "## Slide 4 - Prioritized problem + proposed solution" in deck
     assert "Payments & refunds." in deck
+    assert "L2 breakdown for top complaint/feature themes" in deck
+    assert "Refunds: not processed." in deck
     assert "Money was debited but payment was not received" in deck
 
 

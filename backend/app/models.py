@@ -107,6 +107,7 @@ class Review(Base):
     english_gloss: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     bucket: Mapped[Optional[str]] = mapped_column(ReviewBucket, nullable=True)
     theme: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    l2_theme: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     severity: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     representative_flag: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -126,6 +127,7 @@ class Theme(Base):
     theme_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     rank: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     top_quotes: Mapped[List[Dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    l2_subthemes: Mapped[List[Dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

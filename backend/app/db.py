@@ -43,11 +43,20 @@ def ensure_lightweight_migrations() -> None:
     with engine.begin() as connection:
         if engine.dialect.name == "postgresql":
             connection.execute(text("alter table companies add column if not exists reddit_enabled boolean not null default false"))
+            connection.execute(text("alter table reviews add column if not exists l2_theme text"))
+            connection.execute(text("create index if not exists reviews_l2_theme_idx on reviews(l2_theme)"))
+            connection.execute(text("alter table themes add column if not exists l2_subthemes jsonb not null default '[]'::jsonb"))
             connection.execute(text("alter table settings alter column max_reviews set default 10000"))
         elif engine.dialect.name == "sqlite":
             columns = {row[1] for row in connection.execute(text("pragma table_info(companies)"))}
             if "reddit_enabled" not in columns:
                 connection.execute(text("alter table companies add column reddit_enabled boolean not null default 0"))
+            review_columns = {row[1] for row in connection.execute(text("pragma table_info(reviews)"))}
+            if "l2_theme" not in review_columns:
+                connection.execute(text("alter table reviews add column l2_theme varchar"))
+            theme_columns = {row[1] for row in connection.execute(text("pragma table_info(themes)"))}
+            if "l2_subthemes" not in theme_columns:
+                connection.execute(text("alter table themes add column l2_subthemes json default '[]'"))
 
 
 @contextmanager

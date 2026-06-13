@@ -402,7 +402,7 @@ The actual average Gemini Batch cost from live runs is about `$0.193 / company`.
 |---|---|
 | Add Reddit relevance gate | Prevent Pronto-style noisy Reddit spend |
 | Add source-level ROI card | Operator should see cost/useful row |
-| Add `llm_mode = batch_only` in admin UI | Make policy visible |
+| Show `llm_mode = batch_only` in the dashboard/operator surface | Make policy visible without reviving the admin panel |
 | Add "Batch pending" state | Batch-only should not look stuck |
 | Persist Batch operation IDs as first-class fields | Easier cost/debug audit |
 
@@ -1079,19 +1079,98 @@ Expected throughput:
 
 | Priority | Recommendation | Why |
 |---|---|---|
-| P0 | Switch Gemini classification to slim row-id contract | Biggest token reduction without losing core insight |
-| P0 | Remove per-row `english_gloss`; generate gloss only for top quotes | Largest output-token win |
-| P0 | Remove severity from LLM output if severity is not used by the operator | Simplifies UI and schema load |
+| P0 | Keep Gemini classification on slim row-id contract | Biggest token reduction without losing core insight |
+| P0 | Keep per-row `english_gloss` out of Gemini output; generate gloss only for top quotes later if needed | Largest output-token win |
+| P0 | Keep severity out of LLM output if severity is not used by the operator | Simplifies UI and schema load |
 | P0 | Enforce Maps global cap of 100 per company | Keeps Maps useful and budget-safe |
 | P0 | Keep paid Play/App Store fallbacks disabled | Avoid surprise spend |
 | P1 | Add Play low-star selection: keep `rating <= 3` first | Aligns spend with complaint mining |
-| P1 | Add Reddit toggle plus relevance gate | Reddit can be good, but not default-good |
-| P1 | Add per-source ROI card | Operator can see whether Reddit/Maps paid for itself |
-| P1 | Add results pagination/server-side filters | Required for 5,000+ rows |
+| P1 | Keep Reddit toggle plus add future relevance gate | Reddit can be good, but not default-good |
+| P1 | Keep per-source ROI card | Operator can see whether Reddit/Maps paid for itself |
+| P1 | Keep results pagination and use server-side per-column filters | Required for 5,000+ rows |
+| P1 | Add L2 sub-themes under top L1 complaint/feature themes | Makes deck/action planning sharper without changing the L1 taxonomy |
 | P2 | Add source-concurrency setting | Useful if Apify/proxy starts throttling |
 | P2 | Add optional praise sampling | Keeps positive themes without sending thousands of 5-star rows |
 
-## 25. Google Stitch Redesign Prompt
+## 25. L2 Sub-Theme Model
+
+Date implemented: 2026-06-13.
+
+L2 is a second Gemini Batch stage after L1 classification. It does not redo bucket/theme classification. It only looks inside already-classified parent L1 groups.
+
+### L2 Eligibility
+
+| Rule | Value |
+|---|---|
+| Buckets processed | `complaint`, `feature_request` |
+| Buckets skipped | `praise` |
+| Minimum parent L1 size | `10 reviews` |
+| Max L2 labels per L1 | `5` |
+| Assignment | Every eligible review receives one `l2_theme` |
+| L2 score | `l2_count / parent_l1_count` |
+| Quotes | Top 3 quotes per L2 label |
+
+### L2 Input Contract
+
+The L2 prompt stays compact:
+
+```json
+{
+  "task": "assign_l2_subthemes",
+  "parent": { "bucket": "complaint", "theme": "payments_or_refunds" },
+  "reviews": [
+    [1, 1, "Payment failed and refund not processed"]
+  ],
+  "row_format": "[row_id, rating, text]",
+  "output": {
+    "subthemes": ["snake_case_label"],
+    "assignments": [[1, "snake_case_label"]]
+  }
+}
+```
+
+L2 deliberately does not send:
+
+| Field | Reason omitted |
+|---|---|
+| `review_hash` | Server maps row_id back to hash |
+| `source` | Source scoring stays outside Gemini |
+| `date` | Recency scoring stays outside Gemini |
+| `english_gloss` | Too expensive per row |
+| `severity` | Removed from current product scoring |
+
+### L2 Output Locations
+
+| Surface | Output |
+|---|---|
+| `reviews` table/API | `l2_theme` column |
+| Tagged CSV/XLSX/JSON export | `l2_theme` field |
+| `themes` table/API | `l2_subthemes` JSON: `label`, `display_label`, `count`, `score`, `top_quotes` |
+| Results UI | Inline L1 expansion showing L2 rows |
+| Deck spec | L2 breakdown for the top 2 complaint/feature L1 themes |
+
+### L2 Cost Expectation
+
+L2 adds cost, but it is intentionally bounded:
+
+| Cost driver | Control |
+|---|---|
+| Number of L2 calls | One Batch request per eligible parent L1 theme |
+| Input size | `row_id`, `rating`, trimmed review text only |
+| Output size | Compact arrays, no gloss/severity/hash |
+| Scope | Complaints/features only; parent must have at least 10 reviews |
+
+Expected L2 increment before live measurement:
+
+| Run size | Expected extra Gemini tokens | Expected INR at project INR 100/USD rule |
+|---|---:|---:|
+| 500 selected rows | ~25k-60k | ~INR 1-3 |
+| 2,000 selected rows | ~80k-180k | ~INR 3-8 |
+| 5,000 selected rows | ~180k-450k | ~INR 8-20 |
+
+This is acceptable for Phase 1 because it improves actionability more than another broad chart would. The live FirstClub rerun should be used as the first actual datapoint and then added to this model.
+
+## 26. Google Stitch Redesign Prompt
 
 Use this prompt in Google Stitch. It asks for five directions and leaves visual style open while preserving the actual product requirements.
 
@@ -1103,7 +1182,7 @@ The product lets an operator submit consumer app/company links, run an overnight
 Create five distinct design directions. For each direction, show:
 1. Home / run queue screen
 2. Company run detail screen
-3. Admin/settings screen
+3. Compact run-configuration controls inside the queue screen
 4. Cost and source-quality view
 5. Empty/loading/error states
 
@@ -1131,28 +1210,30 @@ Company results page requirements:
 - Source mix and source ROI: rows, useful themed rows, non-other %, cost, cost per useful row.
 - Charts:
   - Top themes by score
+  - L1 themes with inline L2 sub-theme expansion
   - Bucket split: complaint / feature_request / praise
   - Source mix
   - Volume over time
   - Optional severity only if enabled; otherwise do not make severity prominent
-- Reviews table with filters:
-  source, bucket, theme, rating, language, date range, search text.
+- Reviews table with per-column filters:
+  hash, source, rating, date, bucket, L1 theme, L2 theme, review text.
 - Keep the table readable for 5,000+ rows: pagination, sticky filters, compact rows.
 - Downloads: xlsx, csv, json, deck-spec.md.
 - Deck-spec panel with copy button and a disabled/stub "Send to Chronicle / Gamma" action.
 - Show top representative quotes per theme. Original text is primary; English gloss appears only for selected top quotes.
 
-Admin/settings requirements:
-- Provider/model: Gemini 3.1 Flash-Lite Batch-only as default.
-- Batch size setting.
-- Max review settings:
-  - Play Store selected rows target
-  - App Store cap note around 500
-  - Maps cap, default 100
-  - Reddit cap, default off
-- Source toggles and source weights.
-- Budget cap per run.
-- Low-confidence threshold based on quarantine rate.
+Run-configuration requirements:
+- No separate admin page for v1.
+- Show provider/model as a read-only policy: Gemini 3.1 Flash-Lite Batch-only.
+- Let the operator configure only per-run source choices:
+  - Google Maps toggle and city/India hint
+  - Reddit toggle
+- Show locked defaults as compact policy chips:
+  - Play low-rated review mining
+  - App Store OSS cap note around 500
+  - Maps cap 100
+  - Reddit default off
+  - Budget cap per run
 - Cost estimator preview: show expected INR/company before running.
 
 Cost/source-quality view requirements:
