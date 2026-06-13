@@ -25,6 +25,7 @@ const emptyDraft = (): DraftCompany => ({
 });
 
 const ACTIVE = new Set(["queued", "scraping", "classifying"]);
+const HISTORY_PAGE_SIZE = 25;
 
 export function Dashboard() {
   const [draft, setDraft] = useState<DraftCompany>(emptyDraft());
@@ -33,6 +34,7 @@ export function Dashboard() {
   const [error, setError] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [historyPage, setHistoryPage] = useState(1);
 
   async function loadRuns() {
     const next = await api.runs();
@@ -54,6 +56,20 @@ export function Dashboard() {
       return [company, run.id, run.status, run.current_stage, run.model_used || ""].some((value) => value.toLowerCase().includes(needle));
     });
   }, [runs, query]);
+  const historyPages = Math.max(1, Math.ceil(filteredRuns.length / HISTORY_PAGE_SIZE));
+  const pagedRuns = useMemo(() => {
+    const safePage = Math.min(historyPage, historyPages);
+    const start = (safePage - 1) * HISTORY_PAGE_SIZE;
+    return filteredRuns.slice(start, start + HISTORY_PAGE_SIZE);
+  }, [filteredRuns, historyPage, historyPages]);
+
+  useEffect(() => {
+    setHistoryPage(1);
+  }, [query]);
+
+  useEffect(() => {
+    if (historyPage > historyPages) setHistoryPage(historyPages);
+  }, [historyPage, historyPages]);
 
   const todaySpend = useMemo(() => {
     const today = new Date().toDateString();
@@ -133,7 +149,7 @@ export function Dashboard() {
         <div className="table-toolbar">
           <div>
             <h2>Run History</h2>
-            <p>{filteredRuns.length} runs visible</p>
+            <p>{filteredRuns.length} runs visible · page {Math.min(historyPage, historyPages)} of {historyPages}</p>
           </div>
           <label className="search-box">
             <Search size={15} />
@@ -158,7 +174,7 @@ export function Dashboard() {
               </tr>
             </thead>
             <tbody>
-              {filteredRuns.map((run) => (
+              {pagedRuns.map((run) => (
                 <tr key={run.id} onClick={() => (window.location.href = `/runs/${run.id}`)}>
                   <td className="mono">RN-{run.id.slice(0, 5).toUpperCase()}</td>
                   <td>
@@ -180,6 +196,12 @@ export function Dashboard() {
               ) : null}
             </tbody>
           </table>
+        </div>
+        <div className="pagination-row">
+          <button className="secondary-button" disabled={historyPage <= 1} onClick={() => setHistoryPage(1)}>First</button>
+          <button className="secondary-button" disabled={historyPage <= 1} onClick={() => setHistoryPage((page) => Math.max(1, page - 1))}>Previous</button>
+          <span>Page {Math.min(historyPage, historyPages)} of {historyPages}</span>
+          <button className="secondary-button" disabled={historyPage >= historyPages} onClick={() => setHistoryPage((page) => Math.min(historyPages, page + 1))}>Next</button>
         </div>
       </section>
 
