@@ -362,5 +362,7 @@ function cleanThemeWords(words: string) {
 }
 
 function formatInr(usd: number) {
-  return `INR ${Math.round((usd || 0) * 100).toLocaleString("en-IN")}`;
+  const inr = (usd || 0) * 100;
+  const options = inr > 0 && inr < 10 ? { minimumFractionDigits: 2, maximumFractionDigits: 2 } : { maximumFractionDigits: 0 };
+  return `INR ${inr.toLocaleString("en-IN", options)}`;
 }
