@@ -28,7 +28,7 @@ def humanize_theme(theme: Optional[str]) -> str:
     }
     if theme in exact:
         return exact[theme]
-    words = theme.replace("_", " ").strip()
+    words = clean_theme_words(theme.replace("_", " ").strip())
     if not words:
         return "Other"
     topic_prefixes = {
@@ -52,6 +52,21 @@ def humanize_theme(theme: Optional[str]) -> str:
                 return f"{label}: {remainder}."
             return label
     return words[:1].upper() + words[1:] + ("." if not words.endswith(".") else "")
+
+
+def clean_theme_words(words: str) -> str:
+    replacements = {
+        "overd products": "overpriced products",
+        "poor ,": "poor,",
+        "in- feedback": "in-app feedback",
+        "behind /registration": "behind login/registration",
+        "without mandatory.": "without mandatory registration.",
+        "without mandatory ": "without mandatory registration ",
+    }
+    cleaned = words
+    for old, new in replacements.items():
+        cleaned = cleaned.replace(old, new)
+    return " ".join(cleaned.split())
 
 
 def build_theme_rows(run: Run, reviews: List[Review], source_weights: Dict[str, float], recency_window_days: int) -> List[Theme]:

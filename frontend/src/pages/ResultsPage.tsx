@@ -319,7 +319,7 @@ function humanizeTheme(theme?: string | null) {
   if (theme === "unfair_refund_policies_and_failure_to_process_refunds") {
     return "Refunds: unfair policies & failures to process.";
   }
-  const words = theme.replaceAll("_", " ").trim();
+  const words = cleanThemeWords(theme.replaceAll("_", " ").trim());
   const prefixes: Record<string, string> = {
     refund: "Refunds",
     payment: "Payments",
@@ -340,6 +340,21 @@ function humanizeTheme(theme?: string | null) {
     }
   }
   return `${words.charAt(0).toUpperCase()}${words.slice(1)}.`;
+}
+
+function cleanThemeWords(words: string) {
+  const replacements: Record<string, string> = {
+    "overd products": "overpriced products",
+    "poor ,": "poor,",
+    "in- feedback": "in-app feedback",
+    "behind /registration": "behind login/registration",
+    "without mandatory.": "without mandatory registration.",
+    "without mandatory ": "without mandatory registration ",
+  };
+  return Object.entries(replacements)
+    .reduce((text, [oldText, newText]) => text.replaceAll(oldText, newText), words)
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function formatInr(usd: number) {
