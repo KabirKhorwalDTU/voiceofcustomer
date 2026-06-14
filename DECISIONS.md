@@ -16,6 +16,38 @@ This section supersedes older v5 notes below where they mention bucket-mode, Gem
 - UI: dashboard has rerun/delete controls, sequential run-state visibility, and paginated history; results page has rerun, L1/L2 tree, `Other %`, paginated tagged reviews, and per-column filters.
 - Validation before deploy: backend tests `31 passed`, frontend production build passed, deployment-readiness check passed.
 
+### v6 Hosted Verification - Snabbit
+
+- Deployed code:
+  - Frontend Vercel production alias: `https://frontend-eight-sandy-65.vercel.app`.
+  - Backend Render service: `https://voc-ai-agent-api.onrender.com`.
+  - Product patch commit: `08060a7`.
+  - Gemini Batch polling hotfix commit: `62cf419`.
+- Fresh paid hosted run: `03ebd832-afae-45aa-8f1d-c438f17e357d`.
+  - Frontend result page: `https://frontend-eight-sandy-65.vercel.app/runs/03ebd832-afae-45aa-8f1d-c438f17e357d`.
+  - Backend result endpoint: `https://voc-ai-agent-api.onrender.com/api/runs/03ebd832-afae-45aa-8f1d-c438f17e357d/results`.
+  - Status: `done`.
+  - Wall clock: `2026-06-14T15:58:40Z` to `2026-06-14T16:02:48Z`.
+  - Raw source counts: Play `2517`, App Store `500`, Maps `100`, Reddit `0` disabled, MouthShut `0` disabled.
+  - Selected classified rows after 1/2/3-star filtering + dedup: Play `366`, App Store `309`, Maps `75`, total `750`.
+  - Completeness: all configured sources completed; Reddit and MouthShut disabled intentionally.
+  - Cost: `$0.083` total (`$0.060` Apify Maps + `$0.022958` Gemini Batch).
+  - Gemini: Batch path, `sync_fallback=false`, `8` classification batches, `79,184` input tokens, `17,413` output tokens, `96,597` total tokens.
+  - Quarantine rate: `0.0`.
+  - L1 `other_share`: `0.0973`, below the `15%` quality gate; `low_confidence=false`.
+  - Top L1 themes: `booking_unavailability` 252 rows / 34%, `service_professionalism_concerns` 145 / 19%, `refund_and_payment_issues` 81 / 11%, `customer_support_inefficiency` 79 / 11%.
+  - L2 present for all major themes; top L1 has 5 L2s: `slots_always_full`, `frequent_scheduling_failures`, `service_not_available_in_area`, `false_promises_on_serviceability`, `instant_booking_not_operational`.
+- Export checks:
+  - JSON: `750` rows, columns `review_hash, source, date, rating, text, l1_theme, l2_theme, representative_flag`; no `bucket`, `severity`, or `english_gloss`.
+  - CSV: `251,623` bytes, same L1/L2 header.
+  - XLSX: `130,182` bytes, valid XLSX zip.
+  - Deck spec includes L1/L2 breakdown and no bucket split.
+- UI checks:
+  - Result page shows Snabbit `Done`, L1/L2 thematic density tree, `Other / quarantine = 10% / 0%`, no bucket split.
+  - Tagged reviews table is paginated with columns `Hash, Source, Rating, Date, L1 Theme, L2 Sub-issue, Review`.
+  - Per-column review-text search was tested with `police station`; table reduced to `1` matching row.
+  - Dashboard shows Snabbit run history with rerun/delete controls and active-run state area.
+
 ## v5 Final Status
 
 - Result: successful final-leg hardening.
