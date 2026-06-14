@@ -258,6 +258,75 @@ def test_gemini_batch_timeout_does_not_sync_fallback():
     asyncio.run(run())
 
 
+def test_gemini_batch_poll_retries_transient_503(monkeypatch):
+    async def run():
+        sleeps = []
+        calls = {"count": 0}
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        class FakeRequest:
+            url = "https://generativelanguage.googleapis.com/v1beta/batches/test"
+
+        class FakeResponse:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+                self.request = FakeRequest()
+                self.text = json.dumps(payload)
+
+            @property
+            def is_error(self):
+                return self.status_code >= 400
+
+            def json(self):
+                return self._payload
+
+        class FakeClient:
+            def __init__(self, timeout=60):
+                self.timeout = timeout
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def get(self, _url, headers=None):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    return FakeResponse(503, {"error": {"code": 503, "message": "The service is currently unavailable."}})
+                return FakeResponse(
+                    200,
+                    {
+                        "done": True,
+                        "response": {
+                            "batch": {
+                                "output": {
+                                    "inlinedResponses": [
+                                        {"response": {"candidates": [{"content": {"parts": [{"text": "[]"}]}}]}}
+                                    ]
+                                }
+                            }
+                        },
+                    },
+                )
+
+        monkeypatch.setattr("app.pipeline.gateway.asyncio.sleep", fake_sleep)
+        monkeypatch.setattr("app.pipeline.gateway.httpx.AsyncClient", FakeClient)
+
+        gateway = LLMGateway(AppConfig(gemini_api_key="test", allow_dev_llm_fallback=False), TestSettings())
+        responses = await gateway._poll_batch("batches/test", timeout_seconds=30)
+
+        assert calls["count"] == 2
+        assert sleeps == [5]
+        assert responses[0]["response"]["candidates"][0]["content"]["parts"][0]["text"] == "[]"
+        assert any(event["event"] == "batch_poll_retry" for event in gateway.usage.progress_events)
+
+    asyncio.run(run())
+
+
 def test_gateway_dev_classifier_handles_hinglish():
     async def run():
         text = "Paise debit ho gaye but payment nahi mila"

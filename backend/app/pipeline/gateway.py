@@ -419,11 +419,32 @@ class LLMGateway:
         url = f"https://generativelanguage.googleapis.com/v1beta/{operation_name}"
         headers = {"x-goog-api-key": self.config.gemini_api_key}
         deadline = asyncio.get_running_loop().time() + timeout_seconds
+        transient_errors = 0
         async with httpx.AsyncClient(timeout=60) as client:
             while asyncio.get_running_loop().time() < deadline:
-                response = await client.get(url, headers=headers)
+                try:
+                    response = await client.get(url, headers=headers)
+                except httpx.HTTPError as exc:
+                    transient_errors += 1
+                    error = redact_llm_error(_format_http_error(exc))
+                    await self._emit_progress("batch_poll_retry", operation=operation_name, error=error, transient_errors=transient_errors)
+                    await asyncio.sleep(min(60, 5 * transient_errors))
+                    continue
                 if response.is_error:
+                    if response.status_code in {429, 500, 502, 503, 504}:
+                        transient_errors += 1
+                        error = _format_response_error(response)
+                        await self._emit_progress(
+                            "batch_poll_retry",
+                            operation=operation_name,
+                            status_code=response.status_code,
+                            error=error,
+                            transient_errors=transient_errors,
+                        )
+                        await asyncio.sleep(min(60, 5 * transient_errors))
+                        continue
                     raise RuntimeError(_format_response_error(response))
+                transient_errors = 0
                 data = response.json()
                 if data.get("done"):
                     if data.get("error"):
