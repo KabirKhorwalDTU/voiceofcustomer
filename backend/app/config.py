@@ -13,7 +13,7 @@ class AppConfig(BaseSettings):
     google_maps_api_key: str = ""
     allow_dev_llm_fallback: bool = True
     allow_dev_ingestion_fallback: bool = True
-    backend_cors_origins: str = "http://localhost:5173"
+    backend_cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

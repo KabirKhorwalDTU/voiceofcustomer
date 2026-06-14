@@ -1,5 +1,21 @@
 # DECISIONS
 
+## v6 Classification + UI Course Correction
+
+This section supersedes older v5 notes below where they mention bucket-mode, Gemini sync fallback, severity, english gloss, or incremental tag reuse.
+
+- Product model: pure `L1 theme -> L2 sub-issue`. The old `complaint / feature_request / praise` bucket split is removed from runtime prompts, API responses, review table UI, exports, and deck copy.
+- Rerun behavior: complete rerun only. Every selected review is classified on every run; old tags are not reused. Job dedup still prevents duplicate active runs for the same company.
+- Selected-review rule: rated sources send only 1/2/3-star reviews into final analysis. Reddit remains opt-in and has no star filter.
+- Caps: Play Store uses the configured max, now clamped/defaulted to `5,000`; App Store cap `500`; Google Maps cap `100`; Reddit cap `100`; MouthShut disabled by default.
+- Gemini input/output: taxonomy and classification use compact rows `[row_id, rating, text]`; classification output is `[row_id, l1_theme, l2_theme]`. No source/date/hash/severity/language/gloss is sent to or requested from Gemini.
+- Taxonomy: discovery uses all selected reviews, chunking into proposals plus consolidation if needed. It can produce up to `20` L1 themes with up to `10` L2 sub-issues per L1.
+- Quality gate: if L1 `other` exceeds `15%`, the worker runs one repair pass over `other` rows, then marks the run low-confidence if the target is still missed.
+- L2 rule: L2 is assigned/displayed for every L1 parent with at least `5` rows.
+- Runtime path: Gemini classification uses Batch for Gemini hosted runs; the live run logs must show `sync_fallback = false` for classification.
+- UI: dashboard has rerun/delete controls, sequential run-state visibility, and paginated history; results page has rerun, L1/L2 tree, `Other %`, paginated tagged reviews, and per-column filters.
+- Validation before deploy: backend tests `31 passed`, frontend production build passed, deployment-readiness check passed.
+
 ## v5 Final Status
 
 - Result: successful final-leg hardening.

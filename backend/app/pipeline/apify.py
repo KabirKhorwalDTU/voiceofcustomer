@@ -302,11 +302,31 @@ def dev_reviews(company: Any, max_reviews: int) -> List[RawReview]:
     return reviews
 
 
+def disabled_source_reason(source: str, company: Any) -> Optional[str]:
+    if source == "mouthshut":
+        return "disabled_by_default"
+    if source == "maps" and not company.maps_enabled:
+        return "maps_opt_in_false"
+    if source == "reddit" and not getattr(company, "reddit_enabled", False):
+        return "reddit_opt_in_false"
+    return None
+
+
 async def scrape_sources(company: Any, settings: Any, config: AppConfig, current_cost: float = 0) -> Tuple[List[RawReview], Dict[str, Any], Dict[str, int], float]:
     if not config.apify_token and config.allow_dev_ingestion_fallback:
-        reviews = dev_reviews(company, min(settings.max_reviews, 50))
+        reviews = [
+            review
+            for review in dev_reviews(company, min(settings.max_reviews, 50))
+            if disabled_source_reason(review.source, company) is None
+        ]
         counts = {source: sum(1 for review in reviews if review.source == source) for source in SOURCES}
-        completeness = {source: {"status": "ok", "mode": "dev_sample", "attempts": 0, "count": counts[source]} for source in SOURCES}
+        completeness = {}
+        for source in SOURCES:
+            disabled_reason = disabled_source_reason(source, company)
+            if disabled_reason:
+                completeness[source] = {"status": "disabled", "mode": "dev_sample", "attempts": 0, "count": 0, "reason": disabled_reason}
+            else:
+                completeness[source] = {"status": "ok", "mode": "dev_sample", "attempts": 0, "count": counts[source]}
         return reviews, completeness, counts, current_cost
 
     all_reviews: List[RawReview] = []
@@ -360,12 +380,9 @@ async def scrape_sources(company: Any, settings: Any, config: AppConfig, current
         return source, [], {"status": "failed", "provider": "apify", "actor": ACTORS[source], "attempts": 3, "count": 0, "cost_usd": 0, "attempt_details": attempt_details, "error": last_error}
 
     async def scrape_apify_source(source: str) -> Tuple[str, List[RawReview], Dict[str, Any]]:
-        if source == "mouthshut":
-            return source, [], {"status": "disabled", "provider": "apify", "actor": ACTORS[source], "attempts": 0, "count": 0, "cost_usd": 0, "reason": "disabled_by_default"}
-        if source == "maps" and not company.maps_enabled:
-            return source, [], {"status": "disabled", "provider": "apify", "actor": ACTORS[source], "attempts": 0, "count": 0, "cost_usd": 0, "reason": "maps_opt_in_false"}
-        if source == "reddit" and not getattr(company, "reddit_enabled", False):
-            return source, [], {"status": "disabled", "provider": "apify", "actor": ACTORS[source], "attempts": 0, "count": 0, "cost_usd": 0, "reason": "reddit_opt_in_false"}
+        disabled_reason = disabled_source_reason(source, company)
+        if disabled_reason:
+            return source, [], {"status": "disabled", "provider": "apify", "actor": ACTORS[source], "attempts": 0, "count": 0, "cost_usd": 0, "reason": disabled_reason}
         if not config.apify_token:
             return source, [], {"status": "failed", "provider": "apify", "actor": ACTORS[source], "attempts": 0, "count": 0, "cost_usd": 0, "error": "APIFY_TOKEN is not configured."}
 

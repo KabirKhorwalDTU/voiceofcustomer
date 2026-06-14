@@ -5,7 +5,8 @@ from typing import Dict, List, Optional
 
 SOURCES = ("play", "appstore", "reddit", "maps", "mouthshut")
 DEFAULT_SOURCES = ("play", "appstore", "reddit", "maps")
-BUCKETS = ("complaint", "feature_request", "praise")
+MAX_L1_THEMES = 20
+MAX_L2_THEMES = 10
 
 
 @dataclass
@@ -30,17 +31,8 @@ class CleanReview:
 @dataclass
 class Tag:
     review_hash: str
-    language: str
-    english_gloss: Optional[str]
-    bucket: str
     theme: str
-    severity: Optional[int] = None
-
-
-@dataclass
-class L2Assignment:
-    review_hash: str
-    l2_theme: str
+    l2_theme: Optional[str] = None
 
 
 ThemeSet = Dict[str, List[str]]

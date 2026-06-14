@@ -41,22 +41,17 @@ export type Review = {
   date?: string | null;
   rating?: number | null;
   text: string;
-  language: string;
-  english_gloss?: string | null;
-  bucket?: string | null;
   theme?: string | null;
   l2_theme?: string | null;
-  severity?: number | null;
   representative_flag: boolean;
 };
 
 export type Theme = {
   id: string;
-  bucket: string;
   theme: string;
   count: number;
   normalized_frequency: number;
-  avg_severity: number;
+  share: number;
   theme_score: number;
   rank: number;
   top_quotes: Array<Record<string, unknown>>;

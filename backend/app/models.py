@@ -50,7 +50,6 @@ RunStatus = Enum(
     create_type=False,
 )
 ReviewSource = Enum("play", "appstore", "reddit", "maps", "mouthshut", name="review_source", native_enum=True, create_type=False)
-ReviewBucket = Enum("complaint", "feature_request", "praise", name="review_bucket", native_enum=True, create_type=False)
 
 
 class Company(Base):
@@ -104,11 +103,8 @@ class Review(Base):
     rating: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     language: Mapped[str] = mapped_column(String, nullable=False, default="other")
-    english_gloss: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    bucket: Mapped[Optional[str]] = mapped_column(ReviewBucket, nullable=True)
     theme: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     l2_theme: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
-    severity: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     representative_flag: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -119,7 +115,6 @@ class Theme(Base):
     id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=uuid_str)
     run_id: Mapped[str] = mapped_column(GUID(), ForeignKey("runs.id"), nullable=False, index=True)
     company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
-    bucket: Mapped[str] = mapped_column(ReviewBucket, nullable=False)
     theme: Mapped[str] = mapped_column(String, nullable=False)
     count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     normalized_frequency: Mapped[float] = mapped_column(Float, nullable=False, default=0)
@@ -129,6 +124,10 @@ class Theme(Base):
     top_quotes: Mapped[List[Dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
     l2_subthemes: Mapped[List[Dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    @property
+    def share(self) -> float:
+        return float(self.normalized_frequency or 0)
 
 
 class RunLog(Base):
@@ -158,7 +157,7 @@ class Settings(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     provider: Mapped[str] = mapped_column(String, nullable=False, default="gemini")
     model: Mapped[str] = mapped_column(String, nullable=False, default="gemini-3.1-flash-lite")
-    max_reviews: Mapped[int] = mapped_column(Integer, nullable=False, default=10000)
+    max_reviews: Mapped[int] = mapped_column(Integer, nullable=False, default=5000)
     batch_size: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     recency_window_days: Mapped[int] = mapped_column(Integer, nullable=False, default=90)
     dedup_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.86)

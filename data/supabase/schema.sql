@@ -12,12 +12,6 @@ exception
     when duplicate_object then null;
 end $$;
 
-do $$ begin
-    create type review_bucket as enum ('complaint', 'feature_request', 'praise');
-exception
-    when duplicate_object then null;
-end $$;
-
 create table if not exists companies (
     id uuid primary key default gen_random_uuid(),
     name text not null,
@@ -69,15 +63,11 @@ create table if not exists reviews (
     rating integer,
     text text not null,
     language text not null default 'other',
-    english_gloss text,
-    bucket review_bucket,
     theme text,
     l2_theme text,
-    severity integer,
     representative_flag boolean not null default false,
     created_at timestamptz not null default now(),
     constraint reviews_rating_check check (rating is null or (rating >= 1 and rating <= 5)),
-    constraint reviews_severity_check check (severity is null or severity in (1, 2, 3)),
     constraint reviews_run_hash_unique unique (run_id, review_hash)
 );
 
@@ -91,7 +81,6 @@ create table if not exists themes (
     id uuid primary key default gen_random_uuid(),
     run_id uuid not null references runs(id) on delete cascade,
     company_id uuid not null references companies(id) on delete cascade,
-    bucket review_bucket not null,
     theme text not null,
     count integer not null default 0,
     normalized_frequency numeric(8, 6) not null default 0,
@@ -134,7 +123,7 @@ create table if not exists settings (
     id integer primary key default 1 check (id = 1),
     provider text not null default 'gemini',
     model text not null default 'gemini-3.1-flash-lite',
-    max_reviews integer not null default 10000,
+    max_reviews integer not null default 5000,
     batch_size integer not null default 100,
     recency_window_days integer not null default 90,
     dedup_threshold numeric(5, 4) not null default 0.86,
@@ -147,6 +136,13 @@ insert into settings (id)
 values (1)
 on conflict (id) do nothing;
 
+alter table companies add column if not exists maps_enabled boolean not null default false;
+alter table companies add column if not exists maps_location_hint text not null default 'India';
 alter table companies add column if not exists reddit_enabled boolean not null default false;
 alter table reviews add column if not exists l2_theme text;
 alter table themes add column if not exists l2_subthemes jsonb not null default '[]'::jsonb;
+alter table reviews drop column if exists bucket;
+alter table themes drop column if exists bucket;
+alter table reviews drop column if exists english_gloss;
+alter table reviews drop column if exists severity;
+drop type if exists review_bucket;

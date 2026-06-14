@@ -10,6 +10,12 @@ function entries(obj?: Record<string, number>) {
 function humanizeTheme(theme: string) {
   if (theme === "other") return "Other";
   if (theme === "payments_or_refunds") return "Payments & refunds.";
+  if (theme === "login_or_kyc") return "Login & KYC.";
+  if (theme === "support_quality") return "Support quality.";
+  if (theme === "app_reliability") return "App reliability.";
+  if (theme === "delivery_or_service_fulfillment") return "Delivery & service fulfillment.";
+  if (theme === "quality_or_professionalism") return "Quality & professionalism.";
+  if (theme === "pricing_or_fees") return "Pricing & fees.";
   if (theme === "pricing_and_promotions") return "Pricing & promotions.";
   if (theme === "pricing_and_value") return "Pricing & value.";
   if (theme === "unfair_refund_policies_and_failure_to_process_refunds") {
@@ -45,7 +51,6 @@ function cleanThemeWords(words: string) {
 
 export function ResultsCharts({ results }: { results: Results }) {
   const themes = results.themes.slice(0, 10);
-  const bucketEntries = entries(results.summary.bucket_split);
   const ratingEntries = entries(results.summary.rating_distribution);
   const sourceEntries = entries(results.summary.source_mix);
   const volumeEntries = entries(results.summary.volume_over_time);
@@ -69,11 +74,11 @@ export function ResultsCharts({ results }: { results: Results }) {
         />
       </section>
       <section className="section-block chart-panel">
-        <h3>Bucket split</h3>
+        <h3>L1 theme split</h3>
         <Doughnut
           data={{
-            labels: bucketEntries.map(([key]) => key),
-            datasets: [{ data: bucketEntries.map(([, value]) => value), backgroundColor: palette.slice(1) }],
+            labels: themes.map((theme) => humanizeTheme(theme.theme)),
+            datasets: [{ data: themes.map((theme) => theme.count), backgroundColor: palette }],
           }}
           options={{ responsive: true, maintainAspectRatio: false }}
         />

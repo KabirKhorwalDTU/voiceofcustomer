@@ -24,6 +24,12 @@ def humanize_theme(theme: Optional[str]) -> str:
         return "Other"
     exact = {
         "payments_or_refunds": "Payments & refunds.",
+        "login_or_kyc": "Login & KYC.",
+        "support_quality": "Support quality.",
+        "app_reliability": "App reliability.",
+        "delivery_or_service_fulfillment": "Delivery & service fulfillment.",
+        "quality_or_professionalism": "Quality & professionalism.",
+        "pricing_or_fees": "Pricing & fees.",
         "pricing_and_promotions": "Pricing & promotions.",
         "pricing_and_value": "Pricing & value.",
         "unfair_refund_policies_and_failure_to_process_refunds": "Refunds: unfair policies & failures to process.",
@@ -78,14 +84,15 @@ def clean_theme_words(words: str) -> str:
 
 
 def build_theme_rows(run: Run, reviews: List[Review], source_weights: Dict[str, float], recency_window_days: int) -> List[Theme]:
-    source_totals = Counter(review.source for review in reviews if review.bucket and review.theme)
-    grouped: Dict[Tuple[str, str], List[Review]] = defaultdict(list)
+    source_totals = Counter(review.source for review in reviews if review.theme)
+    grouped: Dict[str, List[Review]] = defaultdict(list)
     for review in reviews:
-        if review.bucket and review.theme:
-            grouped[(review.bucket, review.theme)].append(review)
+        if review.theme:
+            grouped[review.theme].append(review)
 
     rows: List[Theme] = []
-    for (bucket, theme_name), items in grouped.items():
+    total_reviews = len([review for review in reviews if review.theme]) or 1
+    for theme_name, items in grouped.items():
         per_source_counts = Counter(review.source for review in items)
         weighted_shares = []
         active_weight_total = 0.0
@@ -95,20 +102,20 @@ def build_theme_rows(run: Run, reviews: List[Review], source_weights: Dict[str, 
             weight = float(source_weights.get(source, 1))
             active_weight_total += weight
             weighted_shares.append((per_source_counts.get(source, 0) / total) * weight)
-        normalized_frequency = sum(weighted_shares) / active_weight_total if active_weight_total else 0
+        source_normalized_frequency = sum(weighted_shares) / active_weight_total if active_weight_total else 0
+        l1_share = len(items) / total_reviews
         avg_severity = 0
         avg_recency = sum(recency_weight(review.date, recency_window_days) for review in items) / len(items)
-        score = normalized_frequency * avg_recency
+        score = source_normalized_frequency * avg_recency
         top_reviews = sorted(items, key=lambda item: recency_weight(item.date, recency_window_days), reverse=True)[:3]
         l2_subthemes = build_l2_subtheme_rows(items, recency_window_days)
         rows.append(
             Theme(
                 run_id=run.id,
                 company_id=run.company_id,
-                bucket=bucket,
                 theme=theme_name,
                 count=len(items),
-                normalized_frequency=round(normalized_frequency, 6),
+                normalized_frequency=round(l1_share, 6),
                 avg_severity=round(avg_severity, 4),
                 theme_score=round(score, 6),
                 rank=0,
@@ -116,7 +123,6 @@ def build_theme_rows(run: Run, reviews: List[Review], source_weights: Dict[str, 
                 top_quotes=[
                     {
                         "text": review.text,
-                        "english_gloss": review.english_gloss,
                         "source": review.source,
                         "rating": review.rating,
                         "date": review.date.isoformat() if review.date else None,
@@ -135,10 +141,7 @@ def build_theme_rows(run: Run, reviews: List[Review], source_weights: Dict[str, 
 def build_l2_subtheme_rows(reviews: List[Review], recency_window_days: int) -> List[Dict[str, Any]]:
     if not reviews:
         return []
-    parent_bucket = reviews[0].bucket
-    if parent_bucket not in {"complaint", "feature_request"}:
-        return []
-    if len(reviews) < 10:
+    if len(reviews) < 5:
         return []
     grouped: Dict[str, List[Review]] = defaultdict(list)
     for review in reviews:
@@ -160,7 +163,6 @@ def build_l2_subtheme_rows(reviews: List[Review], recency_window_days: int) -> L
                 "top_quotes": [
                     {
                         "text": review.text,
-                        "english_gloss": review.english_gloss,
                         "source": review.source,
                         "rating": review.rating,
                         "date": review.date.isoformat() if review.date else None,
@@ -169,13 +171,23 @@ def build_l2_subtheme_rows(reviews: List[Review], recency_window_days: int) -> L
                 ],
             }
         )
-    return sorted(rows, key=lambda row: row["score"], reverse=True)
+    return sorted(rows, key=lambda row: row["score"], reverse=True)[:10]
 
 
 def build_summary(run: Run, reviews: List[Review], themes: List[Theme]) -> Dict[str, Any]:
     dates = [review.date for review in reviews if review.date]
     source_quality = []
     completeness = run.completeness or {}
+    classified_reviews = [review for review in reviews if review.theme]
+    other_count = sum(1 for review in classified_reviews if review.theme == "other")
+    theme_split = {
+        theme.theme: {
+            "count": theme.count,
+            "share": round(float(theme.normalized_frequency or 0), 4),
+            "display_theme": humanize_theme(theme.theme),
+        }
+        for theme in themes
+    }
     for source, count in Counter(review.source for review in reviews).items():
         source_reviews = [review for review in reviews if review.source == source]
         useful = sum(1 for review in source_reviews if review.theme and review.theme != "other")
@@ -200,7 +212,9 @@ def build_summary(run: Run, reviews: List[Review], themes: List[Theme]) -> Dict[
             "end": max(dates).isoformat() if dates else None,
         },
         "source_mix": dict(Counter(review.source for review in reviews)),
-        "bucket_split": dict(Counter(review.bucket for review in reviews if review.bucket)),
+        "theme_split": theme_split,
+        "other_share": round(other_count / len(classified_reviews), 4) if classified_reviews else 0,
+        "low_confidence": (other_count / len(classified_reviews)) > 0.15 if classified_reviews else False,
         "rating_distribution": dict(Counter(str(review.rating) for review in reviews if review.rating)),
         "volume_over_time": volume_over_time(reviews),
         "source_quality": source_quality,
@@ -208,8 +222,8 @@ def build_summary(run: Run, reviews: List[Review], themes: List[Theme]) -> Dict[
             {
                 "theme": theme.theme,
                 "display_theme": humanize_theme(theme.theme),
-                "bucket": theme.bucket,
                 "count": theme.count,
+                "share": float(theme.normalized_frequency or 0),
                 "theme_score": theme.theme_score,
                 "rank": theme.rank,
                 "l2_subthemes": theme.l2_subthemes,
@@ -236,37 +250,34 @@ def build_deck_spec(company: Company, run: Run, reviews: List[Review], themes: L
     headline = "No classified themes yet."
     if themes:
         top = themes[0]
-        headline = f"Top signal: {humanize_theme(top.theme)} in {top.bucket.replace('_', ' ')} with score {top.theme_score:.3f}."
+        headline = f"Top signal: {humanize_theme(top.theme)} at {int(round(float(top.normalized_frequency or 0) * 100))}% of classified feedback."
     source_mix = ", ".join(f"{source}: {count}" for source, count in summary["source_mix"].items()) or "No data"
-    bucket_split = ", ".join(f"{bucket}: {count}" for bucket, count in summary["bucket_split"].items()) or "No classified data"
     theme_lines = "\n".join(
-        f"- {theme.rank}. {humanize_theme(theme.theme)} ({theme.bucket}): count={theme.count}, score={theme.theme_score:.3f}"
+        f"- {theme.rank}. {humanize_theme(theme.theme)}: count={theme.count}, share={int(round(float(theme.normalized_frequency or 0) * 100))}%, score={theme.theme_score:.3f}"
         for theme in themes[:8]
     )
     l2_sections = []
-    for theme in [item for item in themes if item.bucket in {"complaint", "feature_request"}][:2]:
+    for theme in themes[:2]:
         if not theme.l2_subthemes:
             continue
         lines = [
             f"- {humanize_theme(row.get('label'))}: {int(round(float(row.get('score') or 0) * 100))}% of parent ({row.get('count')} reviews)"
-            for row in theme.l2_subthemes[:5]
+            for row in theme.l2_subthemes[:10]
         ]
         l2_sections.append(f"{humanize_theme(theme.theme)}\n" + "\n".join(lines))
-    l2_breakdown = "\n\n".join(l2_sections) or "- No L2 sub-theme breakdown met the 10-review threshold."
+    l2_breakdown = "\n\n".join(l2_sections) or "- No L2 sub-theme breakdown met the 5-review threshold."
     quote_lines = []
     for theme in themes[:4]:
         if theme.top_quotes:
             quote = theme.top_quotes[0]
-            gloss = quote.get("english_gloss")
-            gloss_suffix = f" Gloss: {gloss}" if gloss else ""
-            quote_lines.append(f"- {humanize_theme(theme.theme)}: \"{quote.get('text')}\"{gloss_suffix}")
+            quote_lines.append(f"- {humanize_theme(theme.theme)}: \"{quote.get('text')}\"")
     quotes = "\n".join(quote_lines) or "- No representative quotes available."
 
     return f"""# Deck Spec - {company.name}
 
 ## Slide 1 - About the applicant + project + headline finding
 
-Applicant/project: Voice of Customer analysis for {company.name}. Public app-store, Reddit, Google Maps, and MouthShut feedback was collected and classified into Complaint, Feature Request, and Praise buckets.
+Applicant/project: Voice of Customer analysis for {company.name}. Public app-store, Reddit, Google Maps, and MouthShut feedback was collected and classified into L1 issue themes and L2 sub-issues.
 
 Headline finding: {headline}
 
@@ -275,12 +286,12 @@ Headline finding: {headline}
 Total reviews: {summary["total_reviews"]}
 Date range: {summary["date_range"]["start"]} to {summary["date_range"]["end"]}
 Source mix: {source_mix}
-Bucket split: {bucket_split}
+Other share: {int(round(float(summary["other_share"] or 0) * 100))}%
 
-Top themes by theme_score:
+Top L1 themes:
 {theme_lines or "- No themes available."}
 
-L2 breakdown for top complaint/feature themes:
+L2 breakdown for top L1 themes:
 {l2_breakdown}
 
 ## Slide 3 - Representative voices
@@ -289,7 +300,7 @@ L2 breakdown for top complaint/feature themes:
 
 ## Slide 4 - Prioritized problem + proposed solution
 
-Prioritized problem: Operator to complete based on the highest-scoring complaint theme and supporting quotes.
+Prioritized problem: Operator to complete based on the highest-scoring L1 theme and supporting L2 evidence.
 
 Proposed solution: Operator to complete with target workflow, product intervention, and success metric.
 """
@@ -303,12 +314,8 @@ def reviews_to_records(reviews: List[Review]) -> List[Dict[str, Any]]:
             "date": review.date.isoformat() if review.date else None,
             "rating": review.rating,
             "text": review.text,
-            "language": review.language,
-            "english_gloss": review.english_gloss,
-            "bucket": review.bucket,
-            "theme": review.theme,
+            "l1_theme": review.theme,
             "l2_theme": review.l2_theme,
-            "severity": review.severity,
             "representative_flag": review.representative_flag,
         }
         for review in reviews
@@ -327,12 +334,8 @@ def export_reviews(reviews: List[Review], fmt: str) -> Tuple[bytes, str, str]:
             "date",
             "rating",
             "text",
-            "language",
-            "english_gloss",
-            "bucket",
-            "theme",
+            "l1_theme",
             "l2_theme",
-            "severity",
             "representative_flag",
         ]
         writer = csv.DictWriter(output, fieldnames=fieldnames)
@@ -347,12 +350,8 @@ def export_reviews(reviews: List[Review], fmt: str) -> Tuple[bytes, str, str]:
             "date",
             "rating",
             "text",
-            "language",
-            "english_gloss",
-            "bucket",
-            "theme",
+            "l1_theme",
             "l2_theme",
-            "severity",
             "representative_flag",
         ]
         workbook = Workbook()

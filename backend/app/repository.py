@@ -195,7 +195,6 @@ def query_run_reviews(
     page: int = 1,
     page_size: int = 50,
     source: str = "",
-    bucket: str = "",
     theme: str = "",
     l2_theme: str = "",
     rating: str = "",
@@ -209,8 +208,6 @@ def query_run_reviews(
     filters = [Review.run_id == run_id]
     if source:
         filters.append(Review.source == source)
-    if bucket:
-        filters.append(Review.bucket == bucket)
     if theme:
         filters.append(Review.theme == theme)
     if l2_theme:
@@ -236,7 +233,6 @@ def query_run_reviews(
                 cast(Review.rating, String).ilike(like),
                 Review.text.ilike(like),
                 Review.language.ilike(like),
-                cast(Review.bucket, String).ilike(like),
                 Review.theme.ilike(like),
                 Review.l2_theme.ilike(like),
             )
@@ -273,27 +269,6 @@ def set_run_status(session: Session, run: Run, status: str, error: Optional[str]
     elif status in {"scraping", "classifying", "done", "partial"}:
         run.error = None
     session.flush()
-
-
-def prior_tags_by_hash(session: Session, company_id: str, hashes: List[str]) -> Dict[str, Review]:
-    if not hashes:
-        return {}
-    rows = session.execute(
-        select(Review)
-        .join(Run, Run.id == Review.run_id)
-        .where(
-            Review.company_id == company_id,
-            Review.review_hash.in_(hashes),
-            Review.bucket.is_not(None),
-            Review.theme.is_not(None),
-            Run.quarantine_rate < 0.2,
-        )
-        .order_by(desc(Review.created_at))
-    ).scalars()
-    result: Dict[str, Review] = {}
-    for row in rows:
-        result.setdefault(row.review_hash, row)
-    return result
 
 
 def log_run_event(

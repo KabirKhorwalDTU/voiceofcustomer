@@ -35,30 +35,24 @@ def sample_objects():
         rating=1,
         text="Paise debit ho gaye but payment nahi mila",
         language="hinglish",
-        english_gloss="Money was debited but payment was not received",
-        bucket="complaint",
         theme="payments_or_refunds",
         l2_theme="refund_not_processed",
-        severity=3,
         representative_flag=True,
     )
     theme = Theme(
         id="theme-1",
         run_id=run.id,
         company_id=company.id,
-        bucket="complaint",
         theme="payments_or_refunds",
         count=1,
         normalized_frequency=1,
-        avg_severity=3,
+        avg_severity=0,
         theme_score=2.7,
         rank=1,
         top_quotes=[
             {
                 "text": review.text,
-                "english_gloss": review.english_gloss,
                 "source": review.source,
-                "severity": review.severity,
                 "date": review.date.isoformat(),
             }
         ],
@@ -87,17 +81,12 @@ def test_tagged_reviews_json_matches_contract_a_keys():
         "date",
         "rating",
         "text",
-        "language",
-        "english_gloss",
-        "bucket",
-        "theme",
+        "l1_theme",
         "l2_theme",
-        "severity",
         "representative_flag",
     }
     assert payload[0]["source"] == "play"
-    assert payload[0]["bucket"] == "complaint"
-    assert payload[0]["severity"] == 3
+    assert payload[0]["l1_theme"] == "payments_or_refunds"
     assert payload[0]["l2_theme"] == "refund_not_processed"
 
 
@@ -110,9 +99,9 @@ def test_deck_spec_emits_frozen_contract_b_slides():
     assert "## Slide 3 - Representative voices" in deck
     assert "## Slide 4 - Prioritized problem + proposed solution" in deck
     assert "Payments & refunds." in deck
-    assert "L2 breakdown for top complaint/feature themes" in deck
+    assert "L2 breakdown for top L1 themes" in deck
     assert "Refunds: not processed." in deck
-    assert "Money was debited but payment was not received" in deck
+    assert "Other share:" in deck
 
 
 def test_theme_humanizer_does_not_mangle_overpriced_labels():

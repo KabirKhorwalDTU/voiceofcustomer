@@ -10,7 +10,6 @@ const ACTIVE = new Set(["queued", "scraping", "classifying"]);
 type ReviewFilters = {
   review_hash: string;
   source: string;
-  bucket: string;
   theme: string;
   l2_theme: string;
   rating: string;
@@ -21,7 +20,6 @@ type ReviewFilters = {
 const emptyFilters: ReviewFilters = {
   review_hash: "",
   source: "",
-  bucket: "",
   theme: "",
   l2_theme: "",
   rating: "",
@@ -66,7 +64,6 @@ export function ResultsPage() {
     pageSize,
     filters.review_hash,
     filters.source,
-    filters.bucket,
     filters.theme,
     filters.l2_theme,
     filters.rating,
@@ -86,11 +83,11 @@ export function ResultsPage() {
   const completeness = Object.entries(results?.run.completeness || {}) as Array<[string, { status: string; count?: number; error?: string; reason?: string }]>;
   const incomplete = completeness.filter(([, value]) => !["ok", "disabled"].includes(value.status));
   const disabled = completeness.filter(([, value]) => value.status === "disabled");
-  const lowConfidence = Boolean(results && results.run.quarantine_rate > 0.2);
+  const otherShare = Number(results?.summary.other_share || 0);
+  const lowConfidence = Boolean(results && (results.run.quarantine_rate > 0.2 || results.summary.low_confidence));
 
   const sourceOptions = useMemo(() => Object.keys(results?.summary.source_mix || {}).sort(), [results]);
-  const bucketOptions = useMemo(() => Object.keys(results?.summary.bucket_split || {}).sort(), [results]);
-  const themeOptions = useMemo(() => (results?.themes || []).map((theme) => theme.theme), [results]);
+  const themeOptions = useMemo(() => Array.from(new Set((results?.themes || []).map((theme) => theme.theme))).sort(), [results]);
   const l2Options = useMemo(() => {
     const values = new Set<string>();
     (results?.themes || []).forEach((theme) => {
@@ -195,7 +192,11 @@ export function ResultsPage() {
         <section className="banner ok">All configured sources completed.</section>
       )}
       {disabled.length ? <section className="banner muted-banner">Disabled sources: {disabled.map(([source]) => source).join(", ")}</section> : null}
-      {lowConfidence ? <section className="banner danger">Low confidence: {Math.round(results.run.quarantine_rate * 100)}% of LLM batches were quarantined.</section> : null}
+      {lowConfidence ? (
+        <section className="banner danger">
+          Low confidence: quarantine {Math.round(results.run.quarantine_rate * 100)}%, L1 other {Math.round(otherShare * 100)}%.
+        </section>
+      ) : null}
 
       <section className="insight-grid">
         <div className="insight-card">
@@ -203,7 +204,7 @@ export function ResultsPage() {
           <h2>{topTheme ? `Top signal: ${humanizeTheme(topTheme.theme)}` : "Waiting for classified themes"}</h2>
           <p>
             {topTheme
-              ? `${topTheme.count} selected reviews in ${topTheme.bucket.replace("_", " ")}. Score ${Number(topTheme.theme_score || 0).toFixed(3)}.`
+              ? `${topTheme.count} selected reviews · ${Math.round(Number(topTheme.share ?? topTheme.normalized_frequency ?? 0) * 100)}% of classified feedback · score ${Number(topTheme.theme_score || 0).toFixed(3)}.`
               : "The run will summarize the strongest signal once classification completes."}
           </p>
           {topTheme?.l2_subthemes?.length ? (
@@ -237,7 +238,7 @@ export function ResultsPage() {
         <Metric label="Date range" value={`${results.summary.date_range?.start || "n/a"} to ${results.summary.date_range?.end || "n/a"}`} />
         <Metric label="Tracked cost" value={`${formatInr(trackedCost)} / ${formatInr(results.run.budget_cap)}`} note={`Gemini ${formatInr(geminiUsage.cost)} · Apify ${formatInr(apifyUsage.cost)}`} />
         <Metric label="Gemini tokens" value={geminiUsage.tokens.toLocaleString("en-IN")} note={`${geminiUsage.calls} logged calls`} />
-        <Metric label="Dedup / quarantine" value={`${Math.round(results.run.dedup_ratio * 100)}% / ${Math.round(results.run.quarantine_rate * 100)}%`} />
+        <Metric label="Other / quarantine" value={`${Math.round(otherShare * 100)}% / ${Math.round(results.run.quarantine_rate * 100)}%`} note="Target L1 other below 15%" />
       </section>
 
       <ThemeDensityPanel results={results} expandedThemes={expandedThemes} onToggle={toggleTheme} />
@@ -320,9 +321,8 @@ export function ResultsPage() {
                 <th>Source</th>
                 <th>Rating</th>
                 <th>Date</th>
-                <th>Bucket</th>
-                <th>Theme</th>
-                <th>L2</th>
+                <th>L1 Theme</th>
+                <th>L2 Sub-issue</th>
                 <th>Review</th>
               </tr>
               <tr className="column-search-row">
@@ -330,7 +330,6 @@ export function ResultsPage() {
                 <th><InlineSelect value={filters.source} options={sourceOptions} onChange={(value) => updateFilter("source", value)} /></th>
                 <th><InlineSelect value={filters.rating} options={ratingOptions} onChange={(value) => updateFilter("rating", value)} /></th>
                 <th><ColumnInput value={filters.date_query} placeholder="YYYY-MM" onChange={(value) => updateFilter("date_query", value)} /></th>
-                <th><InlineSelect value={filters.bucket} options={bucketOptions} onChange={(value) => updateFilter("bucket", value)} /></th>
                 <th><InlineSelect value={filters.theme} options={themeOptions} display={humanizeTheme} onChange={(value) => updateFilter("theme", value)} /></th>
                 <th><InlineSelect value={filters.l2_theme} options={l2Options} display={humanizeTheme} onChange={(value) => updateFilter("l2_theme", value)} /></th>
                 <th><ColumnInput value={filters.text_query} placeholder="Search review text" onChange={(value) => updateFilter("text_query", value)} /></th>
@@ -343,14 +342,13 @@ export function ResultsPage() {
                   <td>{review.source}</td>
                   <td>{review.rating ?? "n/a"}</td>
                   <td>{review.date || "n/a"}</td>
-                  <td>{review.bucket || "pending"}</td>
                   <td>{humanizeTheme(review.theme)}</td>
                   <td>{humanizeTheme(review.l2_theme)}</td>
                   <td className="review-text">{review.text}</td>
                 </tr>
               ))}
               {!reviewPage?.items?.length ? (
-                <tr><td colSpan={8}>No reviews match these filters.</td></tr>
+                <tr><td colSpan={7}>No reviews match these filters.</td></tr>
               ) : null}
             </tbody>
           </table>
@@ -419,35 +417,38 @@ function ThemeDensityPanel({
   const themes = results.themes.slice(0, 8);
   const maxScore = Math.max(...themes.map((theme) => Number(theme.theme_score || 0)), 0.001);
   const l2Count = themes.reduce((total, theme) => total + (theme.l2_subthemes?.length || 0), 0);
+  const otherShare = Number(results.summary.other_share || 0);
 
   return (
     <section className="section-block density-panel">
       <div className="section-title-row">
         <div>
           <h2>Thematic Density</h2>
-          <p>L1 themes by score with L2 sub-issues expanded for complaint and feature-request parents.</p>
+          <p>L1 themes by share and score, with L2 sub-issues expanded for parents with at least 5 rows.</p>
         </div>
-        <div className="density-badge">{l2Count} L2 sub-themes</div>
+        <div className={`density-badge ${otherShare > 0.15 ? "warn" : ""}`}>
+          Other {Math.round(otherShare * 100)}% · {l2Count} L2
+        </div>
       </div>
       <div className="density-list">
         {themes.map((theme) => {
           const expanded = expandedThemes.has(theme.id);
           const hasL2 = Boolean(theme.l2_subthemes?.length);
           const scorePct = Math.max(2, Math.round((Number(theme.theme_score || 0) / maxScore) * 100));
+          const sharePct = Math.round(Number(theme.share ?? theme.normalized_frequency ?? 0) * 100);
           return (
             <div className="density-row" key={theme.id}>
               <button className="density-main" type="button" onClick={() => hasL2 && onToggle(theme.id)} disabled={!hasL2}>
                 <span className="density-label">{humanizeTheme(theme.theme)}</span>
-                <span className={`bucket-chip bucket-${theme.bucket}`}>{theme.bucket.replace("_", " ")}</span>
                 <span className="density-bar" aria-hidden="true">
                   <span style={{ width: `${scorePct}%` }} />
                 </span>
-                <span className="density-impact">{theme.count} rows · score {Number(theme.theme_score || 0).toFixed(3)}</span>
+                <span className="density-impact">{theme.count} rows · {sharePct}% · score {Number(theme.theme_score || 0).toFixed(3)}</span>
                 {hasL2 ? (expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />) : <span className="density-empty">No L2</span>}
               </button>
               {expanded && hasL2 ? (
                 <div className="l2-stack">
-                  {theme.l2_subthemes.slice(0, 5).map((row) => {
+                  {theme.l2_subthemes.slice(0, 10).map((row) => {
                     const quote = row.top_quotes?.[0]?.text;
                     return (
                       <div className="l2-row" key={row.label}>
@@ -505,6 +506,12 @@ function humanizeTheme(theme?: string | null) {
   if (!theme) return "Pending";
   if (theme === "other") return "Other";
   if (theme === "payments_or_refunds") return "Payments & refunds.";
+  if (theme === "login_or_kyc") return "Login & KYC.";
+  if (theme === "support_quality") return "Support quality.";
+  if (theme === "app_reliability") return "App reliability.";
+  if (theme === "delivery_or_service_fulfillment") return "Delivery & service fulfillment.";
+  if (theme === "quality_or_professionalism") return "Quality & professionalism.";
+  if (theme === "pricing_or_fees") return "Pricing & fees.";
   if (theme === "pricing_and_promotions") return "Pricing & promotions.";
   if (theme === "pricing_and_value") return "Pricing & value.";
   if (theme === "unfair_refund_policies_and_failure_to_process_refunds") {

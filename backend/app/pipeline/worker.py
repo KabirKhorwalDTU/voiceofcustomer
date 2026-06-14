@@ -1,5 +1,5 @@
 import asyncio
-from collections import defaultdict
+from collections import Counter
 from typing import Dict, List, Optional
 
 from sqlalchemy import delete, select
@@ -11,26 +11,8 @@ from app.pipeline.apify import BudgetExceeded, scrape_sources
 from app.pipeline.cleaner import clean_and_dedup
 from app.pipeline.gateway import BATCH_POLL_TIMEOUT_SECONDS, LLMGateway, redact_llm_error
 from app.pipeline.synth import build_theme_rows
-from app.pipeline.types import CleanReview, Tag
-from app.repository import get_settings, log_run_event, prior_tags_by_hash, set_run_status
-
-
-def stratified_sample(reviews: List[CleanReview], limit: int = 300) -> List[CleanReview]:
-    buckets: Dict[str, List[CleanReview]] = {}
-    for review in reviews:
-        key = f"{review.source}:{review.rating or 'none'}"
-        buckets.setdefault(key, []).append(review)
-    sample: List[CleanReview] = []
-    while buckets and len(sample) < limit:
-        for key in list(buckets.keys()):
-            values = buckets[key]
-            if values:
-                sample.append(values.pop(0))
-                if len(sample) >= limit:
-                    break
-            if not values:
-                buckets.pop(key, None)
-    return sample
+from app.pipeline.types import CleanReview, MAX_L2_THEMES, Tag, ThemeSet
+from app.repository import get_settings, log_run_event, set_run_status
 
 
 def is_analysis_candidate(review: CleanReview) -> bool:
@@ -39,38 +21,21 @@ def is_analysis_candidate(review: CleanReview) -> bool:
     return review.rating in {1, 2, 3}
 
 
-def l2_candidate_groups(rows: List[Review]) -> List[tuple[str, str, List[CleanReview]]]:
-    grouped: Dict[tuple[str, str], List[Review]] = defaultdict(list)
-    for row in rows:
-        if row.bucket not in {"complaint", "feature_request"}:
-            continue
-        if not row.theme:
-            continue
-        grouped[(row.bucket, row.theme)].append(row)
+def other_share_from_tags(tags: List[Tag]) -> float:
+    if not tags:
+        return 0
+    return sum(1 for tag in tags if tag.theme == "other") / len(tags)
 
-    groups: List[tuple[str, str, List[CleanReview]]] = []
-    for (bucket, theme), items in grouped.items():
-        if len(items) < 10:
+
+def enforce_l2_threshold(tags: List[Tag], theme_set: ThemeSet, min_parent_rows: int = 5) -> None:
+    counts = Counter(tag.theme for tag in tags)
+    for tag in tags:
+        if counts[tag.theme] < min_parent_rows:
+            tag.l2_theme = None
             continue
-        groups.append(
-            (
-                bucket,
-                theme,
-                [
-                    CleanReview(
-                        source=item.source,
-                        review_hash=item.review_hash,
-                        text=item.text,
-                        date=item.date,
-                        rating=item.rating,
-                        language=item.language,
-                    )
-                    for item in items
-                ],
-            )
-        )
-    groups.sort(key=lambda item: len(item[2]), reverse=True)
-    return groups
+        allowed = theme_set.get(tag.theme, [])[:MAX_L2_THEMES]
+        if tag.l2_theme not in allowed:
+            tag.l2_theme = allowed[0] if allowed else None
 
 
 class Worker:
@@ -205,7 +170,6 @@ class Worker:
                 selected_source_counts[review.source] = selected_source_counts.get(review.source, 0) + 1
             for source in source_counts:
                 selected_source_counts.setdefault(source, 0)
-            hashes = [review.review_hash for review in cleaned]
             with session_scope() as session:
                 run = session.get(Run, run_id)
                 if run is None:
@@ -260,13 +224,10 @@ class Worker:
                 run.dedup_ratio = dedup_ratio
                 set_run_status(session, run, "classifying")
 
-                prior = prior_tags_by_hash(session, run.company_id, hashes)
                 review_rows: Dict[str, Review] = {}
-                new_reviews: List[CleanReview] = []
                 for review in cleaned:
                     if review.review_hash in review_rows:
                         continue
-                    reused = prior.get(review.review_hash)
                     row = Review(
                         run_id=run.id,
                         company_id=run.company_id,
@@ -275,28 +236,24 @@ class Worker:
                         date=review.date,
                         rating=review.rating,
                         text=review.text,
-                        language=reused.language if reused else review.language,
-                        english_gloss=reused.english_gloss if reused else None,
-                        bucket=reused.bucket if reused else None,
-                        theme=reused.theme if reused else None,
-                        l2_theme=reused.l2_theme if reused else None,
-                        severity=reused.severity if reused else None,
+                        language=review.language,
+                        theme=None,
+                        l2_theme=None,
                     )
                     session.add(row)
                     review_rows[review.review_hash] = row
-                    if reused is None:
-                        new_reviews.append(review)
                 session.flush()
                 log_run_event(
                     session,
                     run,
                     stage="classification",
-                    event="incremental_reuse_checked",
+                    event="complete_rerun_prepared",
                     status="ok",
                     details={
                         "cleaned_reviews": len(cleaned),
-                        "reused_reviews": len(cleaned) - len(new_reviews),
-                        "new_reviews": len(new_reviews),
+                        "classified_reviews": len(cleaned),
+                        "reused_reviews": 0,
+                        "reason": "incremental tag reuse disabled; every run is a full reclassification",
                     },
                 )
 
@@ -329,11 +286,11 @@ class Worker:
                     stage="theme_discovery",
                     event="stage_started",
                     status="ok",
-                    provider=settings.provider,
-                    model=settings.model,
-                    details={"sample_size": len(stratified_sample(cleaned))},
+                        provider=settings.provider,
+                        model=settings.model,
+                    details={"review_count": len(cleaned), "sampling": "all_selected_reviews"},
                 )
-            theme_set = await gateway.discover_themes(stratified_sample(cleaned))
+            theme_set = await gateway.discover_themes(cleaned)
             with session_scope() as session:
                 run = session.get(Run, run_id)
                 if run is None:
@@ -356,17 +313,17 @@ class Worker:
                     status="ok",
                     provider=settings.provider,
                     model=settings.model,
-                    details={"new_reviews": len(new_reviews), "batch_size": settings.batch_size},
+                    details={"classified_reviews": len(cleaned), "batch_size": settings.batch_size, "theme_count": len(theme_set)},
                 )
             if settings.provider == "gemini":
                 classification_timeout = BATCH_POLL_TIMEOUT_SECONDS + 600
             else:
-                classification_timeout = max(3600, ((len(new_reviews) + int(settings.batch_size) - 1) // int(settings.batch_size)) * 120)
+                classification_timeout = max(3600, ((len(cleaned) + int(settings.batch_size) - 1) // int(settings.batch_size)) * 120)
             try:
-                tags, usage = await asyncio.wait_for(gateway.classify_all(new_reviews, theme_set), timeout=classification_timeout)
+                tags, usage = await asyncio.wait_for(gateway.classify_all(cleaned, theme_set), timeout=classification_timeout)
             except asyncio.TimeoutError:
                 usage = gateway.usage
-                total_batches = (len(new_reviews) + int(settings.batch_size) - 1) // int(settings.batch_size)
+                total_batches = (len(cleaned) + int(settings.batch_size) - 1) // int(settings.batch_size)
                 usage.path = f"{usage.path}_timeout_heuristic_fallback"
                 usage.total_batches = total_batches
                 usage.quarantined_batches = total_batches
@@ -376,7 +333,54 @@ class Worker:
                         "reason": f"classification exceeded {classification_timeout}s and fell back to quarantined heuristic tags",
                     }
                 )
-                tags = [gateway._heuristic_tag(review, theme_set, quarantine=True) for review in new_reviews]
+                tags = [gateway._heuristic_tag(review, theme_set, quarantine=True) for review in cleaned]
+
+            other_share_before_repair = other_share_from_tags(tags)
+            other_share_after_repair = other_share_before_repair
+            if other_share_before_repair > 0.15:
+                other_hashes = {tag.review_hash for tag in tags if tag.theme == "other"}
+                other_reviews = [review for review in cleaned if review.review_hash in other_hashes]
+                with session_scope() as session:
+                    run = session.get(Run, run_id)
+                    if run:
+                        log_run_event(
+                            session,
+                            run,
+                            stage="classification",
+                            event="other_share_repair_started",
+                            status="warning",
+                            provider=settings.provider,
+                            model=settings.model,
+                            details={"other_share": round(other_share_before_repair, 4), "other_reviews": len(other_reviews), "target_other_share": 0.15},
+                        )
+                repaired_theme_set = await gateway.repair_theme_set(other_reviews, theme_set)
+                try:
+                    repair_tags, usage = await asyncio.wait_for(gateway.classify_all(other_reviews, repaired_theme_set), timeout=classification_timeout)
+                    repair_map = {tag.review_hash: tag for tag in repair_tags}
+                    tags = [repair_map.get(tag.review_hash, tag) if tag.theme == "other" else tag for tag in tags]
+                    theme_set = repaired_theme_set
+                    other_share_after_repair = other_share_from_tags(tags)
+                except (asyncio.TimeoutError, RuntimeError) as exc:
+                    usage = gateway.usage
+                    usage.malformed_retries.append({"attempt": "other_repair_failed", "reason": redact_llm_error(exc)})
+                with session_scope() as session:
+                    run = session.get(Run, run_id)
+                    if run:
+                        log_run_event(
+                            session,
+                            run,
+                            stage="classification",
+                            event="other_share_repair_completed",
+                            status="ok" if other_share_after_repair <= 0.15 else "warning",
+                            provider=settings.provider,
+                            model=settings.model,
+                            details={
+                                "other_share_before": round(other_share_before_repair, 4),
+                                "other_share_after": round(other_share_after_repair, 4),
+                                "theme_count": len(theme_set),
+                            },
+                        )
+            enforce_l2_threshold(tags, theme_set, min_parent_rows=5)
             tag_map: Dict[str, Tag] = {tag.review_hash: tag for tag in tags}
 
             with session_scope() as session:
@@ -387,20 +391,11 @@ class Worker:
                 for row in rows:
                     tag = tag_map.get(row.review_hash)
                     if tag:
-                        row.language = tag.language
-                        row.english_gloss = tag.english_gloss
-                        row.bucket = tag.bucket
-                        row.theme = tag.theme if tag.theme in theme_set.get(tag.bucket, []) else "other"
-                        row.severity = tag.severity
-                        row.l2_theme = None
-                    elif row.bucket and row.theme and row.theme not in theme_set.get(row.bucket, []):
-                        row.theme = "other"
-                        row.l2_theme = None
+                        row.theme = tag.theme if tag.theme in theme_set else "other"
+                        row.l2_theme = tag.l2_theme if row.theme in theme_set else "other"
 
                 run.cost_estimate = round(float(run.cost_estimate or 0) + usage.cost_usd, 4)
-                l1_total_batches = usage.total_batches
-                l1_quarantined_batches = usage.quarantined_batches
-                run.quarantine_rate = min(1, l1_quarantined_batches / l1_total_batches) if l1_total_batches else 0
+                run.quarantine_rate = min(1, usage.quarantined_batches / usage.total_batches) if usage.total_batches else 0
                 log_run_event(
                     session,
                     run,
@@ -422,113 +417,11 @@ class Worker:
                         "malformed_retries": usage.malformed_retries,
                         "progress_events": usage.progress_events[-50:],
                         "tagged_reviews": len(tags),
+                        "other_share_before_repair": round(other_share_before_repair, 4),
+                        "other_share_after_repair": round(other_share_after_repair, 4),
+                        "l2_min_parent_reviews": 5,
                     },
                 )
-                over_budget_after_l1 = run.cost_estimate > float(settings.per_run_budget_usd)
-                if over_budget_after_l1:
-                    log_run_event(
-                        session,
-                        run,
-                        stage="budget",
-                        event="budget_exceeded",
-                        status="partial",
-                        cost_usd=float(run.cost_estimate),
-                        details={"budget_cap": float(settings.per_run_budget_usd)},
-                    )
-                    set_run_status(session, run, "partial", "Budget cap exceeded after LLM processing")
-                    l2_groups = []
-                else:
-                    l2_groups = l2_candidate_groups(rows)
-                    log_run_event(
-                        session,
-                        run,
-                        stage="l2_subthemes",
-                        event="stage_started",
-                        status="ok",
-                        provider=settings.provider,
-                        model=settings.model,
-                        details={
-                            "eligible_parent_themes": len(l2_groups),
-                            "min_parent_reviews": 10,
-                            "buckets": ["complaint", "feature_request"],
-                            "review_count": sum(len(group[2]) for group in l2_groups),
-                        },
-                    )
-
-            l2_usage = None
-            if l2_groups:
-                l2_gateway = LLMGateway(config, settings, progress_callback=make_llm_progress_logger("l2_subthemes"))
-                try:
-                    l2_assignments, l2_usage = await asyncio.wait_for(
-                        l2_gateway.assign_l2_subthemes(l2_groups),
-                        timeout=BATCH_POLL_TIMEOUT_SECONDS + 600 if settings.provider == "gemini" else max(3600, len(l2_groups) * 180),
-                    )
-                except asyncio.TimeoutError:
-                    l2_usage = l2_gateway.usage
-                    l2_usage.path = f"{l2_usage.path}_timeout_heuristic_fallback"
-                    l2_usage.total_batches = len(l2_groups)
-                    l2_usage.quarantined_batches = len(l2_groups)
-                    l2_usage.malformed_retries.append(
-                        {
-                            "attempt": "l2_timeout",
-                            "reason": f"L2 sub-theme assignment exceeded timeout and fell back to heuristics",
-                        }
-                    )
-                    l2_assignments = []
-                    for bucket, theme, reviews in l2_groups:
-                        l2_assignments.extend(l2_gateway._heuristic_l2_assignments(bucket, theme, reviews, quarantine=True))
-                l2_map = {assignment.review_hash: assignment.l2_theme for assignment in l2_assignments}
-            else:
-                l2_map = {}
-
-            with session_scope() as session:
-                run = session.get(Run, run_id)
-                if run is None:
-                    return
-                rows = list(session.execute(select(Review).where(Review.run_id == run.id)).scalars())
-                for row in rows:
-                    row.l2_theme = l2_map.get(row.review_hash)
-
-                if l2_usage is not None:
-                    run.cost_estimate = round(float(run.cost_estimate or 0) + l2_usage.cost_usd, 4)
-                    total_batches = l1_total_batches + l2_usage.total_batches
-                    quarantined_batches = l1_quarantined_batches + l2_usage.quarantined_batches
-                    run.quarantine_rate = min(1, quarantined_batches / total_batches) if total_batches else 0
-                    log_run_event(
-                        session,
-                        run,
-                        stage="l2_subthemes",
-                        event="stage_completed",
-                        status="ok" if l2_usage.quarantined_batches == 0 else "partial",
-                        provider=settings.provider,
-                        model=settings.model,
-                        cost_usd=l2_usage.cost_usd,
-                        input_tokens=l2_usage.input_tokens,
-                        output_tokens=l2_usage.output_tokens,
-                        total_tokens=l2_usage.total_tokens,
-                        details={
-                            "path": l2_usage.path,
-                            "batch_probe": l2_usage.batch_probe,
-                            "total_batches": l2_usage.total_batches,
-                            "quarantined_batches": l2_usage.quarantined_batches,
-                            "malformed_retries": l2_usage.malformed_retries,
-                            "progress_events": l2_usage.progress_events[-50:],
-                            "assigned_reviews": len(l2_map),
-                            "eligible_parent_themes": len(l2_groups),
-                        },
-                    )
-                else:
-                    log_run_event(
-                        session,
-                        run,
-                        stage="l2_subthemes",
-                        event="stage_skipped",
-                        status="ok",
-                        details={
-                            "reason": "No complaint or feature_request parent themes with at least 10 reviews, or budget exceeded before L2.",
-                            "eligible_parent_themes": len(l2_groups),
-                        },
-                    )
 
                 if run.cost_estimate > float(settings.per_run_budget_usd):
                     log_run_event(
@@ -540,7 +433,7 @@ class Worker:
                         cost_usd=float(run.cost_estimate),
                         details={"budget_cap": float(settings.per_run_budget_usd)},
                     )
-                    set_run_status(session, run, "partial", "Budget cap exceeded after L2 processing")
+                    set_run_status(session, run, "partial", "Budget cap exceeded after LLM processing")
 
                 session.execute(delete(Theme).where(Theme.run_id == run.id))
                 session.flush()

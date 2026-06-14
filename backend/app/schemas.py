@@ -66,12 +66,8 @@ class ReviewOut(BaseModel):
     date: Optional[dt_date] = None
     rating: Optional[int] = None
     text: str
-    language: str
-    english_gloss: Optional[str] = None
-    bucket: Optional[str] = None
     theme: Optional[str] = None
     l2_theme: Optional[str] = None
-    severity: Optional[int] = None
     representative_flag: bool
 
     model_config = {"from_attributes": True}
@@ -87,11 +83,10 @@ class ReviewPageOut(BaseModel):
 
 class ThemeOut(BaseModel):
     id: str
-    bucket: str
     theme: str
     count: int
     normalized_frequency: float
-    avg_severity: float
+    share: float = 0
     theme_score: float
     rank: int
     top_quotes: List[Dict[str, Any]]

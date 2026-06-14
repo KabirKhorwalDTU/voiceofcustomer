@@ -11,7 +11,8 @@ from app.pipeline.cleaner import clean_and_dedup, review_hash
 from app.pipeline.gateway import LLMGateway
 from app.pipeline.gateway import redact_llm_error
 from app.pipeline.resolver import resolve_links
-from app.pipeline.types import CleanReview, RawReview
+from app.pipeline.types import CleanReview, RawReview, Tag
+from app.pipeline.worker import enforce_l2_threshold, other_share_from_tags
 
 
 class TestSettings:
@@ -119,24 +120,26 @@ def test_gemini_classification_prompt_is_slim():
     review = CleanReview(source="play", review_hash="hash-1", text="Payment failed", date=date.today(), rating=1, language="en")
     gateway = LLMGateway(get_config(), TestSettings())
 
-    prompt = gateway._classification_prompt([review], {"complaint": ["payments_or_refunds", "other"], "feature_request": ["other"], "praise": ["other"]})
+    prompt = gateway._classification_prompt([review], {"payments_or_refunds": ["payment_debited_without_service"], "other": ["other"]})
 
     assert prompt["reviews"] == [[1, 1, "Payment failed"]]
-    assert prompt["output_format"] == "[row_id, bucket, theme]"
+    assert prompt["output_format"] == "[row_id, l1_theme, l2_theme]"
     assert "severity" not in json.dumps(prompt)
     assert "english_gloss" not in json.dumps(prompt)
     assert "review_hash" not in json.dumps(prompt)
 
 
-def test_gemini_l2_prompt_is_slim():
+def test_gemini_theme_discovery_prompt_is_l1_l2():
     review = CleanReview(source="play", review_hash="hash-1", text="Payment failed and refund not processed", date=date.today(), rating=1, language="en")
     gateway = LLMGateway(get_config(), TestSettings())
 
-    prompt = gateway._l2_prompt("complaint", "payments_or_refunds", [review])
+    prompt = gateway._theme_discovery_prompt([review])
 
     assert prompt["reviews"] == [[1, 1, "Payment failed and refund not processed"]]
     assert prompt["row_format"] == "[row_id, rating, text]"
-    assert prompt["output"] == {"subthemes": ["snake_case_label"], "assignments": [[1, "snake_case_label"]]}
+    assert prompt["output"] == {"themes": [{"l1_theme": "snake_case_label", "l2_subthemes": ["snake_case_label"]}]}
+    assert prompt["max_l1_themes"] == 20
+    assert prompt["max_l2_subthemes_per_l1"] == 10
     serialized = json.dumps(prompt)
     assert "review_hash" not in serialized
     assert "severity" not in serialized
@@ -145,19 +148,45 @@ def test_gemini_l2_prompt_is_slim():
     assert "date" not in serialized
 
 
-def test_gateway_validates_l2_assignments_from_compact_arrays():
+def test_gateway_validates_l1_l2_tags_from_compact_arrays():
     review = CleanReview(source="play", review_hash="hash-1", text="Payment failed", date=date.today(), rating=1, language="en")
     gateway = LLMGateway(get_config(), TestSettings())
 
-    assignments = gateway._validate_l2_assignments(
-        {"subthemes": ["refund_not_processed"], "assignments": [[1, "refund_not_processed"]]},
+    tags = gateway._validate_tags(
+        [[1, "payments_or_refunds", "refund_not_processed"]],
         [review],
-        "complaint",
-        "payments_or_refunds",
+        {"payments_or_refunds": ["refund_not_processed"], "other": ["other"]},
     )
 
-    assert assignments[0].review_hash == "hash-1"
-    assert assignments[0].l2_theme == "refund_not_processed"
+    assert tags[0].review_hash == "hash-1"
+    assert tags[0].theme == "payments_or_refunds"
+    assert tags[0].l2_theme == "refund_not_processed"
+
+
+def test_l2_threshold_keeps_subthemes_only_for_parents_with_five_rows():
+    theme_set = {"payments_or_refunds": ["refund_not_processed"], "login_or_kyc": ["otp_failure"], "other": ["other"]}
+    tags = [
+        Tag(review_hash=f"pay-{index}", theme="payments_or_refunds", l2_theme="refund_not_processed")
+        for index in range(5)
+    ] + [
+        Tag(review_hash=f"login-{index}", theme="login_or_kyc", l2_theme="otp_failure")
+        for index in range(4)
+    ]
+
+    enforce_l2_threshold(tags, theme_set, min_parent_rows=5)
+
+    assert all(tag.l2_theme == "refund_not_processed" for tag in tags if tag.theme == "payments_or_refunds")
+    assert all(tag.l2_theme is None for tag in tags if tag.theme == "login_or_kyc")
+
+
+def test_other_share_counts_l1_other_rows():
+    tags = [
+        Tag(review_hash="a", theme="payments_or_refunds", l2_theme="refund_not_processed"),
+        Tag(review_hash="b", theme="other", l2_theme="other"),
+        Tag(review_hash="c", theme="other", l2_theme="other"),
+    ]
+
+    assert other_share_from_tags(tags) == pytest.approx(2 / 3)
 
 
 def test_gemini_sync_cost_uses_flash_lite_token_pricing():
@@ -186,7 +215,7 @@ def test_gemini_theme_discovery_uses_batch_path():
 
         async def batch_call(_payload, _display_name, _metadata):
             called["batch"] = True
-            return {"complaint": ["login issues"], "feature_request": ["dark mode"], "praise": ["easy to use"]}
+            return {"themes": [{"l1_theme": "easy to use", "l2_subthemes": ["simple navigation"]}]}
 
         async def sync_call(_payload):
             raise AssertionError("theme discovery should not call Gemini sync")
@@ -196,7 +225,8 @@ def test_gemini_theme_discovery_uses_batch_path():
         themes = await gateway.discover_themes([review])
 
         assert called["batch"] is True
-        assert themes["praise"] == ["easy_to_use", "other"]
+        assert themes["easy_to_use"] == ["simple_navigation"]
+        assert themes["other"] == ["other"]
 
     asyncio.run(run())
 
@@ -220,7 +250,7 @@ def test_gemini_batch_timeout_does_not_sync_fallback():
         gateway.classify_batch = sync_classify
 
         with pytest.raises(RuntimeError, match="Batch operation timed out"):
-            await gateway.classify_all([review], {"complaint": ["other"], "feature_request": ["other"], "praise": ["other"]})
+            await gateway.classify_all([review], {"other": ["other"]})
 
         assert gateway.usage.path == "batch"
         assert gateway.usage.batch_probe["sync_fallback"] is False
@@ -242,9 +272,8 @@ def test_gateway_dev_classifier_handles_hinglish():
         gateway = LLMGateway(get_config(), TestSettings())
         theme_set = await gateway.discover_themes([review])
         tags, usage = await gateway.classify_all([review], theme_set)
-        assert tags[0].bucket == "complaint"
-        assert tags[0].severity is None
         assert tags[0].theme == "payments_or_refunds"
+        assert tags[0].l2_theme in theme_set["payments_or_refunds"]
         assert usage.total_batches == 1
 
     asyncio.run(run())
@@ -261,6 +290,38 @@ def test_scraper_does_not_use_dev_samples_when_production_fallback_disabled():
         assert completeness["mouthshut"]["status"] == "disabled"
         assert completeness["reddit"]["status"] == "failed"
         assert "APIFY_TOKEN" in completeness["reddit"]["error"]
+
+    asyncio.run(run())
+
+
+def test_dev_ingestion_fallback_respects_optional_source_toggles():
+    async def run():
+        company = type(
+            "Company",
+            (),
+            {
+                "name": "FirstClub",
+                "brand_keyword": "firstclub",
+                "play_id": "com.firstclub.app",
+                "app_id": "6744534743",
+                "domain": "firstclub.site",
+                "maps_enabled": False,
+                "maps_location_hint": "India",
+                "reddit_enabled": False,
+            },
+        )()
+        config = AppConfig(apify_token="", allow_dev_ingestion_fallback=True)
+        reviews, completeness, counts, cost = await scrape_sources(company, TestSettings(), config)
+
+        assert cost == 0
+        assert {review.source for review in reviews} == {"play", "appstore"}
+        assert counts["reddit"] == 0
+        assert counts["maps"] == 0
+        assert completeness["reddit"]["status"] == "disabled"
+        assert completeness["reddit"]["reason"] == "reddit_opt_in_false"
+        assert completeness["maps"]["status"] == "disabled"
+        assert completeness["maps"]["reason"] == "maps_opt_in_false"
+        assert completeness["mouthshut"]["status"] == "disabled"
 
     asyncio.run(run())
 
@@ -345,7 +406,7 @@ def test_llm_errors_redact_provider_keys():
     assert "key=[redacted]" in redacted
 
 
-def test_gateway_validation_defaults_null_severity():
+def test_gateway_validation_falls_back_to_other_for_unknown_l1():
     review = CleanReview(
         source="maps",
         review_hash="abc",
@@ -356,12 +417,13 @@ def test_gateway_validation_defaults_null_severity():
     )
     gateway = LLMGateway(get_config(), TestSettings())
     tags = gateway._validate_tags(
-        [[1, "praise", "other"]],
+        [[1, "unknown_theme", "unknown_subtheme"]],
         [review],
-        {"complaint": ["other"], "feature_request": ["other"], "praise": ["other"]},
+        {"known_theme": ["known_subtheme"], "other": ["other"]},
     )
 
-    assert tags[0].severity is None
+    assert tags[0].theme == "other"
+    assert tags[0].l2_theme == "other"
 
 
 def test_gateway_quarantines_theme_discovery_provider_failure():
@@ -382,7 +444,7 @@ def test_gateway_quarantines_theme_discovery_provider_failure():
         gateway._json_call_batch = fail
         themes = await gateway.discover_themes([review])
 
-        assert "payments_or_refunds" in themes["complaint"]
+        assert "payments_or_refunds" in themes
         assert gateway.usage.quarantined_batches == 1
 
     asyncio.run(run())
@@ -404,7 +466,7 @@ def test_gateway_quarantines_classification_provider_failure():
             raise RuntimeError("provider unavailable")
 
         gateway._json_call = fail
-        tags = await gateway.classify_batch([review], {"complaint": ["other"], "feature_request": ["other"], "praise": ["other"]})
+        tags = await gateway.classify_batch([review], {"other": ["other"]})
 
         assert tags[0].review_hash == "abc"
         assert tags[0].theme == "other"
