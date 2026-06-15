@@ -16,6 +16,8 @@ from app.repository import (
     delete_run_by_id,
     get_company_runs,
     get_latest_run_log,
+    get_latest_run_logs,
+    get_run_cost_rollup,
     get_run,
     get_run_logs,
     get_run_results,
@@ -28,6 +30,7 @@ from app.repository import (
 from app.schemas import ResultsOut, ReviewPageOut, RunLogOut, RunOut, SettingsOut, SettingsUpdate, SubmitRunRequest, SubmitRunResponse
 
 
+_LATEST_LOG_NOT_PROVIDED = object()
 app = FastAPI(title="Voice of Customer AI Agent", version="1.0.0")
 config = get_config()
 logger = logging.getLogger(__name__)
@@ -89,7 +92,9 @@ def submit_run(request: SubmitRunRequest) -> SubmitRunResponse:
 @app.get("/api/runs", response_model=List[RunOut])
 def runs() -> List[RunOut]:
     with session_scope() as session:
-        return [run_out(session, run) for run in list_runs(session)]
+        run_rows = list_runs(session)
+        latest_logs = get_latest_run_logs(session, [run.id for run in run_rows])
+        return [run_out(session, run, latest_logs.get(run.id)) for run in run_rows]
 
 
 @app.get("/api/runs/{run_id}", response_model=RunOut)
@@ -127,7 +132,9 @@ def delete_run(run_id: str) -> Response:
 @app.get("/api/companies/{company_id}/runs", response_model=List[RunOut])
 def company_runs(company_id: str) -> List[RunOut]:
     with session_scope() as session:
-        return [run_out(session, run) for run in get_company_runs(session, company_id)]
+        run_rows = get_company_runs(session, company_id)
+        latest_logs = get_latest_run_logs(session, [run.id for run in run_rows])
+        return [run_out(session, run, latest_logs.get(run.id)) for run in run_rows]
 
 
 @app.get("/api/runs/{run_id}/results", response_model=ResultsOut)
@@ -137,14 +144,16 @@ def results(run_id: str) -> ResultsOut:
             run, company, reviews, themes = get_run_results(session, run_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="run not found") from None
-        deck_spec = build_deck_spec(company, run, reviews, themes)
+        summary = build_summary(run, reviews, themes)
+        summary["cost_rollup"] = get_run_cost_rollup(session, run_id)
+        deck_spec = build_deck_spec(company, run, reviews, themes, summary=summary)
         return ResultsOut(
             company=company,
             run=run_out(session, run),
             reviews=[],
             themes=themes,
-            logs=get_run_logs(session, run_id),
-            summary=build_summary(run, reviews, themes),
+            logs=[],
+            summary=summary,
             deck_spec=deck_spec,
         )
 
@@ -232,9 +241,9 @@ def write_settings(update: SettingsUpdate) -> SettingsOut:
         return SettingsOut.model_validate(settings)
 
 
-def run_out(session, run) -> RunOut:
+def run_out(session, run, latest_log=_LATEST_LOG_NOT_PROVIDED) -> RunOut:
     output = RunOut.model_validate(run)
-    latest = get_latest_run_log(session, run.id)
+    latest = get_latest_run_log(session, run.id) if latest_log is _LATEST_LOG_NOT_PROVIDED else latest_log
     stage = latest.stage if latest else run.status
     event = latest.event if latest else ""
     output.current_stage = stage_label(run.status, stage, event)

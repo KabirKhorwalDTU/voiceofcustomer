@@ -836,6 +836,14 @@ th {
   background: #ffe0e0;
 }
 
+.dashboard-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
 .banner.muted-banner {
   color: #4c5c59;
   background: #eef4f2;

@@ -148,6 +148,15 @@ export function Dashboard() {
         </div>
       </header>
 
+      {error && !modalOpen ? (
+        <section className="banner danger dashboard-alert">
+          <span>{error}</span>
+          <button type="button" className="icon-button tiny-action" onClick={() => setError("")} aria-label="Dismiss error">
+            <X size={14} />
+          </button>
+        </section>
+      ) : null}
+
       <section className="queue-summary">
         <SummaryTile icon={<Clock3 size={18} />} label="Active runs" value={String(activeRuns.length)} note="Worker runs one company at a time" />
         <SummaryTile icon={<Database size={18} />} label="Queue capacity" value={`${runs.length}/250`} note="History endpoint is capped for UI speed" />
@@ -226,10 +235,16 @@ export function Dashboard() {
                   <td>{run.finished_at ? new Date(run.finished_at).toLocaleString() : "In progress"}</td>
                   <td>
                     <div className="row-actions" onClick={(event) => event.stopPropagation()}>
-                      <button className="icon-button tiny-action" title="Rerun company" disabled={actionRunId === run.id} onClick={() => rerun(run)}>
+                      <button type="button" className="icon-button tiny-action" title="Rerun company" disabled={actionRunId === run.id} onClick={() => rerun(run)}>
                         <RotateCcw size={15} />
                       </button>
-                      <button className="icon-button tiny-action danger-action" title="Delete run" disabled={ACTIVE.has(run.status) || actionRunId === run.id} onClick={() => deleteRun(run)}>
+                      <button
+                        type="button"
+                        className="icon-button tiny-action danger-action"
+                        title={ACTIVE.has(run.status) ? "Active runs cannot be deleted" : "Delete run"}
+                        disabled={ACTIVE.has(run.status) || actionRunId === run.id}
+                        onClick={() => deleteRun(run)}
+                      >
                         <Trash2 size={15} />
                       </button>
                     </div>

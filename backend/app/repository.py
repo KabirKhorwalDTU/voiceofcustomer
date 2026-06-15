@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import and_, cast, delete, desc, func, or_, select, String
+from sqlalchemy import and_, case, cast, delete, desc, func, or_, select, String
 from sqlalchemy.orm import Session, joinedload
 
 from app.models import Company, Review, Run, RunLog, Settings, Theme
@@ -175,6 +175,28 @@ def list_runs(session: Session, limit: int = 250) -> List[Run]:
     )
 
 
+def get_latest_run_logs(session: Session, run_ids: List[str]) -> Dict[str, RunLog]:
+    if not run_ids:
+        return {}
+    latest = (
+        select(RunLog.run_id, func.max(RunLog.created_at).label("created_at"))
+        .where(RunLog.run_id.in_(run_ids))
+        .group_by(RunLog.run_id)
+        .subquery()
+    )
+    rows = list(
+        session.execute(
+            select(RunLog)
+            .join(latest, and_(RunLog.run_id == latest.c.run_id, RunLog.created_at == latest.c.created_at))
+            .order_by(desc(RunLog.created_at))
+        ).scalars()
+    )
+    by_run: Dict[str, RunLog] = {}
+    for row in rows:
+        by_run.setdefault(row.run_id, row)
+    return by_run
+
+
 def get_run(session: Session, run_id: str) -> Optional[Run]:
     return session.execute(select(Run).where(Run.id == run_id).options(joinedload(Run.company))).scalars().first()
 
@@ -319,3 +341,31 @@ def get_latest_run_log(session: Session, run_id: str) -> Optional[RunLog]:
     return session.execute(
         select(RunLog).where(RunLog.run_id == run_id).order_by(desc(RunLog.created_at)).limit(1)
     ).scalars().first()
+
+
+def get_run_cost_rollup(session: Session, run_id: str) -> Dict[str, Dict[str, float]]:
+    rows = session.execute(
+        select(
+            RunLog.provider,
+            func.count(RunLog.id),
+            func.sum(RunLog.cost_usd),
+            func.sum(RunLog.input_tokens),
+            func.sum(RunLog.output_tokens),
+            func.sum(RunLog.total_tokens),
+            func.sum(case((RunLog.total_tokens > 0, 1), else_=0)),
+        )
+        .where(RunLog.run_id == run_id, RunLog.provider.is_not(None))
+        .group_by(RunLog.provider)
+    ).all()
+    return {
+        provider: {
+            "events": int(events or 0),
+            "calls": int(calls or 0),
+            "cost": float(cost or 0),
+            "input_tokens": int(input_tokens or 0),
+            "output_tokens": int(output_tokens or 0),
+            "tokens": int(total_tokens or 0),
+        }
+        for provider, events, cost, input_tokens, output_tokens, total_tokens, calls in rows
+        if provider
+    }

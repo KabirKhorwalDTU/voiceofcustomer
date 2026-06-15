@@ -150,10 +150,20 @@ export const api = {
     });
   },
   deleteRun(id: string) {
+    if (!API_BASE) {
+      return Promise.reject(new Error("API backend is not configured. Set VITE_API_BASE_URL to the deployed FastAPI backend URL and redeploy the frontend."));
+    }
     return fetch(`${API_BASE}/api/runs/${id}`, { method: "DELETE" }).then(async (response) => {
       if (!response.ok) {
         const body = await response.text();
-        throw new Error(body || response.statusText);
+        let message = body || response.statusText;
+        try {
+          const parsed = JSON.parse(body);
+          message = parsed.detail || message;
+        } catch {
+          // Keep the raw response text.
+        }
+        throw new Error(message);
       }
     });
   },

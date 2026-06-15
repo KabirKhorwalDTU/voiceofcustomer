@@ -97,8 +97,8 @@ export function ResultsPage() {
   }, [results]);
   const ratingOptions = useMemo(() => Object.keys(results?.summary.rating_distribution || {}).sort(), [results]);
 
-  const geminiUsage = useMemo(() => rollupLogs(results?.logs || [], "gemini"), [results]);
-  const apifyUsage = useMemo(() => rollupLogs(results?.logs || [], "apify"), [results]);
+  const geminiUsage = useMemo(() => rollupProvider(results, "gemini"), [results]);
+  const apifyUsage = useMemo(() => rollupProvider(results, "apify"), [results]);
   const trackedCost = Math.max(results?.run.cost_estimate || 0, geminiUsage.cost + apifyUsage.cost);
   const topTheme = results?.themes?.[0];
   const deckPreview = useMemo(() => {
@@ -500,6 +500,19 @@ function rollupLogs(logs: RunLog[], provider: "gemini" | "apify") {
       }),
       { calls: 0, cost: 0, tokens: 0 },
     );
+}
+
+function rollupProvider(results: Results | null, provider: "gemini" | "apify") {
+  const fromLogs = rollupLogs(results?.logs || [], provider);
+  if (fromLogs.cost || fromLogs.tokens || fromLogs.calls || results?.logs?.length) {
+    return fromLogs;
+  }
+  const rollup = results?.summary?.cost_rollup?.[provider] || {};
+  return {
+    calls: Number(rollup.calls || rollup.events || 0),
+    cost: Number(rollup.cost || 0),
+    tokens: Number(rollup.tokens || rollup.total_tokens || 0),
+  };
 }
 
 function humanizeTheme(theme?: string | null) {

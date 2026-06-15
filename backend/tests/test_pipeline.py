@@ -16,6 +16,7 @@ from app.pipeline.gateway import redact_llm_error
 from app.pipeline.resolver import resolve_links
 from app.pipeline.types import CleanReview, RawReview, Tag
 from app.pipeline.worker import acquire_worker_lease, enforce_l2_threshold, other_share_from_tags, recover_stale_active_runs
+from app.repository import get_latest_run_logs, get_run_cost_rollup
 
 
 class TestSettings:
@@ -186,6 +187,37 @@ def test_worker_lease_allows_one_owner_until_expiry():
         session.commit()
 
         assert acquire_worker_lease(session, "owner-b", now=now + timedelta(minutes=6), duration=timedelta(minutes=5)) is True
+
+
+def test_bulk_latest_logs_and_cost_rollup_for_dashboard():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    now = datetime(2026, 6, 15, 5, 0, tzinfo=timezone.utc)
+
+    with SessionLocal() as session:
+        company = Company(id="company-1", name="Example", brand_keyword="example")
+        run_a = Run(id="run-a", company_id=company.id, status="done", company=company)
+        run_b = Run(id="run-b", company_id=company.id, status="done", company=company)
+        session.add_all([company, run_a, run_b])
+        session.flush()
+        session.add_all(
+            [
+                RunLog(id="log-a1", run_id=run_a.id, company_id=company.id, stage="scraping", event="old", created_at=now),
+                RunLog(id="log-a2", run_id=run_a.id, company_id=company.id, stage="classification", event="new", provider="gemini", cost_usd=0.2, input_tokens=100, output_tokens=25, total_tokens=125, created_at=now + timedelta(minutes=1)),
+                RunLog(id="log-b1", run_id=run_b.id, company_id=company.id, stage="terminal", event="done", provider="apify", cost_usd=0.05, created_at=now + timedelta(minutes=2)),
+            ]
+        )
+        session.commit()
+
+        latest = get_latest_run_logs(session, ["run-a", "run-b"])
+        rollup = get_run_cost_rollup(session, "run-a")
+
+        assert latest["run-a"].event == "new"
+        assert latest["run-b"].event == "done"
+        assert rollup["gemini"]["cost"] == 0.2
+        assert rollup["gemini"]["tokens"] == 125
+        assert rollup["gemini"]["calls"] == 1
 
 
 def test_reddit_actor_input_uses_verified_search_schema():

@@ -245,8 +245,8 @@ def volume_over_time(reviews: Iterable[Review]) -> Dict[str, int]:
     return dict(sorted(counts.items()))
 
 
-def build_deck_spec(company: Company, run: Run, reviews: List[Review], themes: List[Theme]) -> str:
-    summary = build_summary(run, reviews, themes)
+def build_deck_spec(company: Company, run: Run, reviews: List[Review], themes: List[Theme], summary: Optional[Dict[str, Any]] = None) -> str:
+    summary = summary or build_summary(run, reviews, themes)
     headline = "No classified themes yet."
     if themes:
         top = themes[0]

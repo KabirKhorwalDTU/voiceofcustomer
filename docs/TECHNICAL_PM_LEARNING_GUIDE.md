@@ -572,7 +572,239 @@ Deck generation and email outreach will add new product surfaces:
 
 For cold-email scale, the next important PM question is not just "can we generate insights?" It is "can we generate an accurate, approved, source-backed outbound artifact for every company without manual rework?"
 
-## 20. Glossary
+## 20. Platform Hosting In PM Terms
+
+### 20.1 What "Render" Means Here
+
+Render is the place where the backend application runs. Think of it as a managed computer in the cloud:
+
+| PM mental model | Engineering reality |
+| --- | --- |
+| "The backend is live somewhere" | Render runs a Linux container/process for the FastAPI app |
+| "The API has a URL" | Render exposes `https://voc-ai-agent-api.onrender.com` |
+| "The worker keeps running" | The same Python process starts a background worker loop |
+| "Secrets are configured" | Render injects env vars like DB URL, Gemini key, Apify key |
+| "A deploy happened" | Render built code from a Git commit and restarted the service |
+
+Render is different from GitHub. GitHub stores code. Render runs code.
+
+Render is different from Supabase. Supabase stores data. Render executes business logic and calls external APIs.
+
+Render is different from Vercel in this project. Vercel serves the browser app. Render runs the API and worker.
+
+### 20.2 What Railway Would Have Been
+
+Railway is a similar backend/cloud hosting platform. It also deploys services, stores environment variables, shows logs, and can run long-lived server processes.
+
+We picked Render because it was available and sufficient for this v1. A Railway version of the product would still need the same fundamentals:
+
+| Need | Render | Railway |
+| --- | --- | --- |
+| Run FastAPI | Yes | Yes |
+| Run long worker | Yes | Yes |
+| Env vars/secrets | Yes | Yes |
+| Logs | Yes | Yes |
+| Git deploys | Yes | Yes |
+| Product architecture change required | No | No |
+
+So Render vs Railway is not a product decision. It is an operations/vendor decision. The product architecture remains: React frontend, FastAPI backend, Supabase database, background worker.
+
+### 20.3 Why Vercel For Frontend
+
+The frontend is a React/Vite app. In production, React does not run as source code. It is compiled into browser files:
+
+| File type | Meaning |
+| --- | --- |
+| HTML | Entry page |
+| CSS | Styling |
+| JavaScript | Compiled React app logic |
+| Images/fonts/assets | Static supporting files |
+
+These are called static assets because the files can be served as-is. Vercel is excellent at this: it puts those files behind a fast global CDN, gives us a stable URL, deploy previews, rollbacks, and Git-based deployment.
+
+Important nuance: "static frontend" does not mean "dead page." It means the files are static, but once loaded in the browser, the JavaScript app is dynamic. It calls the Render API to fetch live run status, reviews, costs, and themes.
+
+### 20.4 Why Vercel Is Not The Backend
+
+This product has long jobs:
+
+| Backend task | Why it is long-running |
+| --- | --- |
+| Scrape reviews | Multiple external sources, retries, throttling |
+| Poll Gemini Batch | Batch jobs are async and can take minutes |
+| Clean/dedup/classify | Thousands of rows per company |
+| Sequential overnight queue | Worker must keep claiming jobs after the user closes the tab |
+
+Vercel can run serverless functions, but serverless request handlers are a poor fit for this worker model. The worker needs a long-lived process that keeps polling even when no browser request is active. Render gives us that.
+
+### 20.5 Why Parcel Was Not The Backend
+
+Parcel is a JavaScript bundler. A bundler packages frontend code and assets into optimized files.
+
+Parcel can answer: "How do I turn source files into browser-ready HTML/CSS/JS?"
+
+Parcel cannot answer: "Where does my FastAPI server run for 10 hours overnight?"
+
+So Parcel is not an alternative to Render or Railway. It is closer to Vite, which we already use. The comparison is:
+
+| Category | Examples | Used here |
+| --- | --- | --- |
+| Frontend bundler/build tool | Vite, Parcel, Webpack | Vite |
+| Frontend hosting/CDN | Vercel, Netlify, Cloudflare Pages | Vercel |
+| Backend hosting/PaaS | Render, Railway, Fly.io | Render |
+| Database | Supabase Postgres, Neon, RDS | Supabase |
+
+If the question is "Could we use Parcel instead of Vite?", yes, but it would not solve backend hosting. If the question is "Could Parcel host the API?", no.
+
+## 21. Key Technical Decisions, Trade-Offs, And Limitations
+
+| Decision | Why we chose it | Trade-off | When to revisit |
+| --- | --- | --- | --- |
+| React + Vite frontend | Fast to build, simple SPA deployment | Not server-rendered; first load waits for API data | If SEO/public pages matter |
+| Vercel frontend hosting | Excellent static asset hosting, previews, CDN | Does not own long worker | Keep unless frontend needs special backend co-location |
+| FastAPI backend | Strong Python ecosystem for scraping, DB, LLM orchestration | Requires a running server service | Keep |
+| Render backend hosting | Long-lived process for API + worker | Service cold starts/restarts can affect latency/worker continuity | If reliability needs grow, move worker to dedicated service/queue |
+| In-process worker | Simple v1, fewer moving parts | Web process and worker share lifecycle | Move to separate worker process for production scale |
+| Postgres as queue | Easy, inspectable, durable | Requires careful leases/recovery; not as rich as Redis/Celery | If >10 simultaneous active jobs or strict scheduling needed |
+| Sequential company processing | Cost predictable, avoids provider pressure | Overnight throughput capped by slowest company | If 100 companies/night becomes mandatory |
+| Gemini Batch | Lower cost and fewer rate-limit issues | Polling complexity; async completion | Keep, but add batch watchdogs |
+| OSS Play/App scrapers | Free direct provider cost | Can break if stores change markup/API behavior | Add health checks and fallback only when deliberately enabled |
+| Maps optional/capped | Good hidden signal, predictable cost | Place matching can miss brands; Apify cost per review | Keep opt-in, expand only for location-heavy businesses |
+| Reddit optional/off | Low ROI in current tests | May miss social signal for public brands | Enable per-company when brand has Reddit presence |
+| No auth for v1 | Fast operator workflow | Public URL risk if leaked | Add basic auth before broader sharing |
+
+## 22. Why The Dashboard And Details Page Were Slow
+
+Measured on 2026-06-15 before the optimization:
+
+| Endpoint | Payload | Time observed | What it means |
+| --- | ---: | ---: | --- |
+| `/health` | 34 bytes | 0.36s | Backend was awake and healthy |
+| `/api/runs` | ~127 KB | 3.46s | Dashboard list was DB-query heavy |
+| `/api/runs/{rapido}/results` | ~147 KB | 2.88s | Results payload did too much upfront |
+| `/api/runs/{rapido}/reviews?page=1&page_size=50` | ~33 KB | 0.99s | Paginated reviews were healthier |
+
+### 22.1 Dashboard Root Cause
+
+The dashboard endpoint loaded up to 250 runs. For each run, it separately fetched the latest log to compute the current stage label.
+
+That is an N+1 query problem:
+
+```text
+1 query: get runs
++ N queries: get latest log per run
+= slow dashboard as history grows
+```
+
+At 37 runs this was already noticeable. At 100+ companies it would become worse.
+
+Fix applied:
+
+| Before | After |
+| --- | --- |
+| One latest-log query per run | One bulk latest-log query for all visible runs |
+| Runtime grows with run count and DB round trips | Runtime still grows with rows, but avoids repeated network round trips |
+
+### 22.2 Details Page Root Cause
+
+The results page had two separate issues:
+
+| Issue | Why it slowed first load |
+| --- | --- |
+| Results endpoint loaded all reviews | Needed summary/deck calculations, but table itself is paginated |
+| Results endpoint returned all logs | UI only needed provider cost totals, not full journey logs |
+| Summary was computed twice | Once for page summary, again inside deck-spec generation |
+
+Fix applied:
+
+| Before | After |
+| --- | --- |
+| Full logs included in `/results` | Logs removed from first payload |
+| Cost split derived from full logs in browser | Backend sends compact `summary.cost_rollup` |
+| Summary computed twice | Summary reused for deck-spec |
+
+Remaining limitation:
+
+The endpoint still loads all reviews to compute charts, source mix, date range, source ROI, theme summary, and deck spec. This is acceptable at hundreds/low-thousands of rows, but for 5,000+ rows/company the next optimization is to precompute summary JSON at run completion and store it in the DB.
+
+### 22.3 Frontend Rendering Cost
+
+The frontend is not the main bottleneck right now. The browser renders:
+
+| UI element | Current behavior |
+| --- | --- |
+| Run table | Paginated at 25 rows |
+| Review table | Server-paginated, 25/50/100 rows |
+| L1/L2 tree | Top themes only |
+| Charts | Small aggregated datasets |
+
+The bigger issue was API response time before React could render.
+
+## 23. Delete Button Root Cause
+
+The backend delete endpoint exists and works only for terminal runs:
+
+| Run status | Delete allowed? |
+| --- | --- |
+| `queued` | No |
+| `scraping` | No |
+| `classifying` | No |
+| `done` | Yes |
+| `partial` | Yes |
+| `failed` | Yes |
+
+The UI bug was that delete errors were stored in frontend state but only displayed inside the "New Analysis" modal. If the backend returned a 409/404/500, the dashboard could appear to do nothing.
+
+Fix applied:
+
+| Before | After |
+| --- | --- |
+| Delete errors hidden unless modal open | Dashboard-level error banner |
+| Active delete icon disabled without explanation | Disabled title explains active runs cannot be deleted |
+| Raw JSON error text possible | API client extracts `detail` when present |
+
+## 24. What "Production-Ready" Means For Cold Emails
+
+For the current phase, production-ready means "safe enough to generate analyst-grade insight inputs overnight," not "fully automated outbound machine."
+
+| Area | Current state | PM judgment |
+| --- | --- | --- |
+| Low-rated Play/App/Maps ingestion | Working | Good enough for pilot |
+| Gemini quarantine | 0% in latest verified runs | Good |
+| L1/L2 themes | Working, but quality should be spot-checked | Good with human review |
+| Raw quotes | Strong | Good |
+| Reddit | Low ROI | Keep off by default |
+| Run reliability | Improved with stale recovery + worker lease | Good for 10-company overnight, monitor |
+| UI performance | Improved after query/payload fixes | Needs continued profiling at 100+ history |
+| Auth/secrets | No auth by product choice | Fine for private operator URL; risky if shared |
+| Deck/email automation | Not built yet | Not ready for fully automated cold email |
+
+Recommendation: use it for the 10-company run and manual deck/email creation, with human review of themes and quotes. Do not yet send fully automated decks/emails without human approval.
+
+## 25. Next Engineering Moves
+
+| Priority | Move | Why |
+| --- | --- | --- |
+| P0 | Store precomputed `run_summary` JSON | Makes results page fast even at 5,000 rows |
+| P0 | Dedicated worker service | Separates API availability from job processing |
+| P1 | Batch watchdog dashboard | Shows operation age and detects stuck Gemini polling earlier |
+| P1 | Delete confirmation modal | Better than browser confirm, more reliable UX |
+| P1 | Basic password/allowlist | Prevent accidental public access |
+| P2 | Source quality scoring | Decide Maps/Reddit inclusion from ROI, not instinct |
+| P2 | Deck approval workflow | Human approval before outbound |
+
+## 26. Useful Official Docs
+
+| Topic | Link |
+| --- | --- |
+| Render web services | https://render.com/docs/web-services |
+| Render background workers | https://render.com/docs/background-workers |
+| Railway services | https://docs.railway.com/services |
+| Vercel deployments | https://vercel.com/docs/deployments |
+| Vercel static files/build output | https://vercel.com/docs/build-output-api/primitives |
+| Parcel | https://parceljs.org/docs/ |
+
+## 27. Glossary
 
 | Term | Meaning |
 | --- | --- |
