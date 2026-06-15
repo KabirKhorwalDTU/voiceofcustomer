@@ -28,7 +28,10 @@ HINGLISH_HINTS = {
 
 
 def normalize_text(text: str) -> str:
-    return re.sub(r"\s+", " ", text or "").strip()
+    # Postgres text columns reject NUL bytes; scrapers occasionally return them
+    # from malformed store payloads, so strip unsafe control characters here.
+    safe = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ", text or "")
+    return re.sub(r"\s+", " ", safe).strip()
 
 
 def review_hash(source: str, text: str, review_date: Optional[date]) -> str:

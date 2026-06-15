@@ -1,18 +1,21 @@
 import asyncio
 import json
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
 
 from app.config import AppConfig
+from app.models import Base, Company, Review, Run, RunLog, Theme
 from app.pipeline.apify import build_actor_input, estimate_cost, place_matches_company, redact_error, scrape_sources
 from app.config import get_config
-from app.pipeline.cleaner import clean_and_dedup, review_hash
+from app.pipeline.cleaner import clean_and_dedup, normalize_text, review_hash
 from app.pipeline.gateway import LLMGateway
 from app.pipeline.gateway import redact_llm_error
 from app.pipeline.resolver import resolve_links
 from app.pipeline.types import CleanReview, RawReview, Tag
-from app.pipeline.worker import enforce_l2_threshold, other_share_from_tags
+from app.pipeline.worker import enforce_l2_threshold, other_share_from_tags, recover_stale_active_runs
 
 
 class TestSettings:
@@ -67,6 +70,96 @@ def test_cleaner_dedups_near_duplicate_reviews():
     cleaned, ratio = clean_and_dedup(raw, 0.86)
     assert len(cleaned) == 2
     assert ratio > 0
+
+
+def test_cleaner_removes_nul_bytes_before_postgres_insert():
+    text = "refund pending\x00support absent\x07"
+
+    assert normalize_text(text) == "refund pending support absent"
+
+    cleaned, _ratio = clean_and_dedup([RawReview(source="play", text=text, date=date.today(), rating=1)], 0.86)
+
+    assert cleaned[0].text == "refund pending support absent"
+    assert "\x00" not in cleaned[0].text
+
+
+def test_stale_active_run_requeues_and_clears_partial_outputs():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    now = datetime(2026, 6, 15, 5, 0, tzinfo=timezone.utc)
+    old = now - timedelta(hours=2)
+
+    with SessionLocal() as session:
+        company = Company(id="company-1", name="Noon", brand_keyword="noon")
+        run = Run(
+            id="run-1",
+            company_id=company.id,
+            status="classifying",
+            started_at=old,
+            source_counts={"play": 1},
+            completeness={"play": {"status": "ok"}},
+            cost_estimate=0.1,
+            dedup_ratio=0.2,
+            quarantine_rate=0.3,
+            company=company,
+        )
+        review = Review(
+            id="review-1",
+            run_id=run.id,
+            company_id=company.id,
+            review_hash="hash-1",
+            source="play",
+            date=date.today(),
+            rating=1,
+            text="bad refund",
+            language="en",
+        )
+        theme = Theme(
+            id="theme-1",
+            run_id=run.id,
+            company_id=company.id,
+            theme="refunds",
+            count=1,
+            normalized_frequency=1,
+            avg_severity=0,
+            theme_score=1,
+            rank=1,
+            top_quotes=[],
+            l2_subthemes=[],
+        )
+        log = RunLog(
+            id="log-1",
+            run_id=run.id,
+            company_id=company.id,
+            stage="classification",
+            event="batch_poll",
+            status="info",
+            created_at=old,
+        )
+        session.add_all([company, run, review, theme, log])
+        session.commit()
+
+        recovered = recover_stale_active_runs(session, now=now, stale_after=timedelta(minutes=30))
+        session.commit()
+
+        refreshed = session.get(Run, "run-1")
+        assert recovered == 1
+        assert refreshed.status == "queued"
+        assert refreshed.started_at is None
+        assert refreshed.finished_at is None
+        assert refreshed.error is None
+        assert refreshed.source_counts == {}
+        assert refreshed.completeness == {}
+        assert refreshed.cost_estimate == 0
+        assert refreshed.dedup_ratio == 0
+        assert refreshed.quarantine_rate == 0
+        assert session.execute(select(Review).where(Review.run_id == "run-1")).scalars().all() == []
+        assert session.execute(select(Theme).where(Theme.run_id == "run-1")).scalars().all() == []
+        ops_log = session.execute(
+            select(RunLog).where(RunLog.run_id == "run-1", RunLog.event == "stale_active_run_requeued")
+        ).scalars().one()
+        assert ops_log.details["prior_status"] == "classifying"
 
 
 def test_reddit_actor_input_uses_verified_search_schema():

@@ -1,18 +1,23 @@
 import asyncio
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, desc, select
 
 from app.config import get_config
 from app.db import session_scope
-from app.models import Review, Run, Theme
+from app.models import Review, Run, RunLog, Theme
 from app.pipeline.apify import BudgetExceeded, scrape_sources
 from app.pipeline.cleaner import clean_and_dedup
 from app.pipeline.gateway import BATCH_POLL_TIMEOUT_SECONDS, LLMGateway, redact_llm_error
 from app.pipeline.synth import build_theme_rows
 from app.pipeline.types import CleanReview, MAX_L2_THEMES, Tag, ThemeSet
 from app.repository import get_settings, log_run_event, set_run_status
+
+
+STALE_ACTIVE_RUN_AFTER = timedelta(minutes=30)
+STALE_RECOVERY_CHECK_SECONDS = 60
 
 
 def is_analysis_candidate(review: CleanReview) -> bool:
@@ -38,10 +43,63 @@ def enforce_l2_threshold(tags: List[Tag], theme_set: ThemeSet, min_parent_rows: 
             tag.l2_theme = allowed[0] if allowed else None
 
 
+def clear_run_outputs(session, run: Run) -> None:
+    session.execute(delete(Theme).where(Theme.run_id == run.id))
+    session.execute(delete(Review).where(Review.run_id == run.id))
+    run.source_counts = {}
+    run.completeness = {}
+    run.cost_estimate = 0
+    run.dedup_ratio = 0
+    run.quarantine_rate = 0
+
+
+def recover_stale_active_runs(session, now: Optional[datetime] = None, stale_after: timedelta = STALE_ACTIVE_RUN_AFTER) -> int:
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - stale_after
+    recovered = 0
+    active_runs = list(
+        session.execute(
+            select(Run).where(Run.status.in_(("queued", "scraping", "classifying"))).order_by(Run.created_at)
+        ).scalars()
+    )
+    for run in active_runs:
+        latest_log = session.execute(
+            select(RunLog).where(RunLog.run_id == run.id).order_by(desc(RunLog.created_at)).limit(1)
+        ).scalars().first()
+        last_seen = latest_log.created_at if latest_log else run.started_at or run.created_at
+        if last_seen is None or last_seen > cutoff:
+            continue
+        prior_status = run.status
+        clear_run_outputs(session, run)
+        run.status = "queued"
+        run.started_at = None
+        run.finished_at = None
+        run.error = None
+        log_run_event(
+            session,
+            run,
+            stage="ops",
+            event="stale_active_run_requeued",
+            status="warning",
+            details={
+                "prior_status": prior_status,
+                "stale_after_minutes": int(stale_after.total_seconds() // 60),
+                "last_seen_at": last_seen.isoformat() if last_seen else None,
+                "last_event": latest_log.event if latest_log else None,
+                "last_stage": latest_log.stage if latest_log else None,
+                "reason": "active run had no fresh logs; assuming worker/deploy interruption and restarting full run",
+            },
+        )
+        recovered += 1
+    session.flush()
+    return recovered
+
+
 class Worker:
     def __init__(self) -> None:
         self._task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
+        self._last_recovery_check = 0.0
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -54,11 +112,21 @@ class Worker:
 
     async def loop(self) -> None:
         while not self._stop.is_set():
+            await self.recover_stale_runs_if_needed()
             run_id = self.next_run_id()
             if run_id:
                 await self.process(run_id)
             else:
                 await asyncio.sleep(1.5)
+
+    async def recover_stale_runs_if_needed(self) -> None:
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        if now - self._last_recovery_check < STALE_RECOVERY_CHECK_SECONDS:
+            return
+        self._last_recovery_check = now
+        with session_scope() as session:
+            recover_stale_active_runs(session)
 
     def next_run_id(self) -> Optional[str]:
         with session_scope() as session:
@@ -74,6 +142,9 @@ class Worker:
                     return
                 settings = get_settings(session)
                 company = run.company
+                clear_run_outputs(session, run)
+                run.started_at = None
+                run.finished_at = None
                 set_run_status(session, run, "scraping")
                 run.budget_cap = float(settings.per_run_budget_usd)
                 run.model_used = f"{settings.provider}:{settings.model}"
