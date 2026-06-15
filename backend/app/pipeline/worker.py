@@ -2,8 +2,9 @@ import asyncio
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
+from uuid import uuid4
 
-from sqlalchemy import delete, desc, select
+from sqlalchemy import delete, desc, select, text
 
 from app.config import get_config
 from app.db import session_scope
@@ -18,6 +19,9 @@ from app.repository import get_settings, log_run_event, set_run_status
 
 STALE_ACTIVE_RUN_AFTER = timedelta(minutes=30)
 STALE_RECOVERY_CHECK_SECONDS = 60
+WORKER_LEASE_NAME = "voc_pipeline_worker"
+WORKER_LEASE_DURATION = timedelta(minutes=5)
+WORKER_LEASE_RENEW_SECONDS = 30
 
 
 def is_analysis_candidate(review: CleanReview) -> bool:
@@ -95,29 +99,106 @@ def recover_stale_active_runs(session, now: Optional[datetime] = None, stale_aft
     return recovered
 
 
+def acquire_worker_lease(
+    session,
+    owner: str,
+    now: Optional[datetime] = None,
+    duration: timedelta = WORKER_LEASE_DURATION,
+) -> bool:
+    now = now or datetime.now(timezone.utc)
+    locked_until = now + duration
+    session.execute(
+        text(
+            """
+            insert into worker_leases (name, owner, locked_until, updated_at)
+            values (:name, :owner, :locked_until, :now)
+            on conflict (name) do nothing
+            """
+        ),
+        {"name": WORKER_LEASE_NAME, "owner": owner, "locked_until": locked_until, "now": now},
+    )
+    result = session.execute(
+        text(
+            """
+            update worker_leases
+            set owner = :owner, locked_until = :locked_until, updated_at = :now
+            where name = :name
+              and (owner = :owner or locked_until < :now)
+            """
+        ),
+        {"name": WORKER_LEASE_NAME, "owner": owner, "locked_until": locked_until, "now": now},
+    )
+    session.flush()
+    return bool(result.rowcount)
+
+
+def release_worker_lease(session, owner: str, now: Optional[datetime] = None) -> None:
+    now = now or datetime.now(timezone.utc)
+    session.execute(
+        text(
+            """
+            update worker_leases
+            set locked_until = :now, updated_at = :now
+            where name = :name and owner = :owner
+            """
+        ),
+        {"name": WORKER_LEASE_NAME, "owner": owner, "now": now},
+    )
+    session.flush()
+
+
 class Worker:
     def __init__(self) -> None:
         self._task: Optional[asyncio.Task] = None
+        self._lease_task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
         self._last_recovery_check = 0.0
+        self._owner = f"worker-{uuid4()}"
+        self._has_lease = False
 
     def start(self) -> None:
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self.loop())
+        if self._lease_task is None or self._lease_task.done():
+            self._lease_task = asyncio.create_task(self.lease_loop())
 
     async def stop(self) -> None:
         self._stop.set()
+        if self._lease_task:
+            self._lease_task.cancel()
+            try:
+                await self._lease_task
+            except asyncio.CancelledError:
+                pass
         if self._task:
             await self._task
+        with session_scope() as session:
+            release_worker_lease(session, self._owner)
 
     async def loop(self) -> None:
         while not self._stop.is_set():
+            if not await self.ensure_worker_lease():
+                await asyncio.sleep(5)
+                continue
             await self.recover_stale_runs_if_needed()
             run_id = self.next_run_id()
             if run_id:
                 await self.process(run_id)
             else:
                 await asyncio.sleep(1.5)
+
+    async def lease_loop(self) -> None:
+        while not self._stop.is_set():
+            await self.ensure_worker_lease()
+            await asyncio.sleep(WORKER_LEASE_RENEW_SECONDS)
+
+    async def ensure_worker_lease(self) -> bool:
+        try:
+            with session_scope() as session:
+                self._has_lease = acquire_worker_lease(session, self._owner)
+        except Exception:
+            self._has_lease = False
+        return self._has_lease
 
     async def recover_stale_runs_if_needed(self) -> None:
         loop = asyncio.get_running_loop()

@@ -15,7 +15,7 @@ from app.pipeline.gateway import LLMGateway
 from app.pipeline.gateway import redact_llm_error
 from app.pipeline.resolver import resolve_links
 from app.pipeline.types import CleanReview, RawReview, Tag
-from app.pipeline.worker import enforce_l2_threshold, other_share_from_tags, recover_stale_active_runs
+from app.pipeline.worker import acquire_worker_lease, enforce_l2_threshold, other_share_from_tags, recover_stale_active_runs
 
 
 class TestSettings:
@@ -160,6 +160,32 @@ def test_stale_active_run_requeues_and_clears_partial_outputs():
             select(RunLog).where(RunLog.run_id == "run-1", RunLog.event == "stale_active_run_requeued")
         ).scalars().one()
         assert ops_log.details["prior_status"] == "classifying"
+
+
+def test_worker_lease_allows_one_owner_until_expiry():
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            create table worker_leases (
+                name varchar primary key,
+                owner varchar not null,
+                locked_until datetime not null,
+                updated_at datetime not null
+            )
+            """
+        )
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    now = datetime(2026, 6, 15, 5, 0, tzinfo=timezone.utc)
+
+    with SessionLocal() as session:
+        assert acquire_worker_lease(session, "owner-a", now=now, duration=timedelta(minutes=5)) is True
+        session.commit()
+
+        assert acquire_worker_lease(session, "owner-b", now=now + timedelta(minutes=1), duration=timedelta(minutes=5)) is False
+        session.commit()
+
+        assert acquire_worker_lease(session, "owner-b", now=now + timedelta(minutes=6), duration=timedelta(minutes=5)) is True
 
 
 def test_reddit_actor_input_uses_verified_search_schema():

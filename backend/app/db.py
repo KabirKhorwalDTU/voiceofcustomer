@@ -49,6 +49,18 @@ def ensure_lightweight_migrations() -> None:
             connection.execute(text("create index if not exists reviews_l2_theme_idx on reviews(l2_theme)"))
             connection.execute(text("alter table themes add column if not exists l2_subthemes jsonb not null default '[]'::jsonb"))
             connection.execute(text("alter table settings alter column max_reviews set default 5000"))
+            connection.execute(
+                text(
+                    """
+                    create table if not exists worker_leases (
+                        name text primary key,
+                        owner text not null,
+                        locked_until timestamptz not null,
+                        updated_at timestamptz not null default now()
+                    )
+                    """
+                )
+            )
             connection.execute(text("alter table reviews drop column if exists bucket"))
             connection.execute(text("alter table themes drop column if exists bucket"))
             connection.execute(text("alter table reviews drop column if exists english_gloss"))
@@ -76,6 +88,18 @@ def ensure_lightweight_migrations() -> None:
                 connection.execute(text("alter table themes add column l2_subthemes json default '[]'"))
             if "bucket" in theme_columns:
                 _drop_sqlite_column(connection, "themes", "bucket")
+            connection.execute(
+                text(
+                    """
+                    create table if not exists worker_leases (
+                        name varchar primary key,
+                        owner varchar not null,
+                        locked_until datetime not null,
+                        updated_at datetime not null default current_timestamp
+                    )
+                    """
+                )
+            )
 
 
 def _drop_sqlite_column(connection, table_name: str, column_name: str) -> None:

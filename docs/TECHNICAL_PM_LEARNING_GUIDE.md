@@ -72,8 +72,23 @@ Current v1 queue is simple:
 | Concurrency | One company at a time |
 | Why sequential | Cost control, lower provider stress, easier overnight operation |
 | Job dedup | If same company has active run, API returns existing active run |
+| Global worker lease | `worker_leases` table prevents two backend processes from owning the queue at once |
 
 This is not a separate queue service like Redis/RQ/Celery. It is enough for v1 because overnight throughput is modest and the worker state is persisted in Postgres.
+
+### 4.2.1 Worker Lease
+
+Render deploys can briefly overlap old and new backend processes. Without a global lock, both processes can start worker loops and claim queue work. The fix is a database-backed lease:
+
+| Lease concept | Meaning |
+| --- | --- |
+| Lease row | One row in `worker_leases`, named `voc_pipeline_worker` |
+| Owner | Random worker instance ID |
+| `locked_until` | Expiry time; if the owner dies, another process can take over later |
+| Renewal | Active owner renews the lease every 30 seconds |
+| Lease duration | 5 minutes |
+
+This keeps the product's operational model sequential even if hosting infrastructure temporarily runs two backend processes during a deploy.
 
 ### 4.3 Run Stages
 
@@ -435,6 +450,13 @@ Fix:
 | Stale-run recovery | If an active run has no fresh logs for 30 minutes, reset it to `queued` |
 | Output cleanup | Delete partial reviews/themes before restarting that run |
 | Ops log | Add `stale_active_run_requeued` with prior status and last event |
+
+Related hardening:
+
+| Fix | Behavior |
+| --- | --- |
+| Global worker lease | Prevents multiple Render processes from claiming the queue at the same time |
+| Lease expiry | Lets a new process take over if the old one dies |
 
 ### Root Cause 2: Noon NUL Byte
 
