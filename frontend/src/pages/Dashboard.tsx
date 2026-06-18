@@ -1,5 +1,5 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { ArrowDownToLine, BarChart3, Check, Clock3, Database, IndianRupee, Plus, RotateCcw, Search, Send, Trash2, X } from "lucide-react";
 import { api, Run } from "../lib/api";
 import { StatusBadge } from "../components/StatusBadge";
@@ -29,6 +29,8 @@ const HISTORY_PAGE_SIZE = 25;
 
 export function Dashboard() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const basePath = location.pathname.startsWith("/kabir") ? "/kabir" : "";
   const [draft, setDraft] = useState<DraftCompany>(emptyDraft());
   const [runs, setRuns] = useState<Run[]>([]);
   const [busy, setBusy] = useState(false);
@@ -103,7 +105,7 @@ export function Dashboard() {
     try {
       const response = await api.rerun(run.id);
       await loadRuns();
-      navigate(`/runs/${response.run.id}`);
+      navigate(`${basePath}/runs/${response.run.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not queue rerun");
     } finally {
@@ -173,7 +175,7 @@ export function Dashboard() {
         </div>
         <div className="active-grid">
           {activeRuns.map((run) => (
-            <Link className="active-card" to={`/runs/${run.id}`} key={run.id}>
+            <Link className="active-card" to={`${basePath}/runs/${run.id}`} key={run.id}>
               <div className="card-menu">...</div>
               <h3>{run.company?.name || run.company_id}</h3>
               <p className="stage-line">{run.current_stage}</p>
@@ -221,7 +223,7 @@ export function Dashboard() {
             </thead>
             <tbody>
               {pagedRuns.map((run) => (
-                <tr key={run.id} onClick={() => navigate(`/runs/${run.id}`)}>
+                <tr key={run.id} onClick={() => navigate(`${basePath}/runs/${run.id}`)}>
                   <td className="mono">RN-{run.id.slice(0, 5).toUpperCase()}</td>
                   <td>
                     <strong>{run.company?.name || run.company_id}</strong>

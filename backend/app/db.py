@@ -45,6 +45,42 @@ def ensure_lightweight_migrations() -> None:
             connection.execute(text("alter table companies add column if not exists maps_enabled boolean not null default false"))
             connection.execute(text("alter table companies add column if not exists maps_location_hint text not null default 'India'"))
             connection.execute(text("alter table companies add column if not exists reddit_enabled boolean not null default false"))
+            connection.execute(text("alter table companies add column if not exists owner_user_id uuid"))
+            connection.execute(text("alter table companies add column if not exists guest_id text"))
+            connection.execute(text("create index if not exists companies_owner_user_id_idx on companies(owner_user_id)"))
+            connection.execute(text("create index if not exists companies_guest_id_idx on companies(guest_id)"))
+            connection.execute(text("alter table runs add column if not exists owner_user_id uuid"))
+            connection.execute(text("alter table runs add column if not exists guest_id text"))
+            connection.execute(text("create index if not exists runs_owner_user_id_idx on runs(owner_user_id)"))
+            connection.execute(text("create index if not exists runs_guest_id_idx on runs(guest_id)"))
+            connection.execute(
+                text(
+                    """
+                    create table if not exists users (
+                        id uuid primary key,
+                        email text not null unique,
+                        display_name text,
+                        created_at timestamptz not null default now(),
+                        last_seen_at timestamptz not null default now()
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    create table if not exists user_sessions (
+                        id uuid primary key,
+                        user_id uuid not null references users(id),
+                        token_hash text not null unique,
+                        expires_at timestamptz not null,
+                        created_at timestamptz not null default now()
+                    )
+                    """
+                )
+            )
+            connection.execute(text("create index if not exists user_sessions_user_id_idx on user_sessions(user_id)"))
+            connection.execute(text("create index if not exists user_sessions_expires_at_idx on user_sessions(expires_at)"))
             connection.execute(text("alter table reviews add column if not exists l2_theme text"))
             connection.execute(text("create index if not exists reviews_l2_theme_idx on reviews(l2_theme)"))
             connection.execute(text("alter table themes add column if not exists l2_subthemes jsonb not null default '[]'::jsonb"))
@@ -74,6 +110,41 @@ def ensure_lightweight_migrations() -> None:
                 connection.execute(text("alter table companies add column maps_location_hint varchar not null default 'India'"))
             if "reddit_enabled" not in columns:
                 connection.execute(text("alter table companies add column reddit_enabled boolean not null default 0"))
+            if "owner_user_id" not in columns:
+                connection.execute(text("alter table companies add column owner_user_id varchar"))
+            if "guest_id" not in columns:
+                connection.execute(text("alter table companies add column guest_id varchar"))
+            run_columns = {row[1] for row in connection.execute(text("pragma table_info(runs)"))}
+            if "owner_user_id" not in run_columns:
+                connection.execute(text("alter table runs add column owner_user_id varchar"))
+            if "guest_id" not in run_columns:
+                connection.execute(text("alter table runs add column guest_id varchar"))
+            connection.execute(
+                text(
+                    """
+                    create table if not exists users (
+                        id varchar primary key,
+                        email varchar not null unique,
+                        display_name varchar,
+                        created_at datetime default current_timestamp,
+                        last_seen_at datetime default current_timestamp
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    create table if not exists user_sessions (
+                        id varchar primary key,
+                        user_id varchar not null,
+                        token_hash varchar not null unique,
+                        expires_at datetime not null,
+                        created_at datetime default current_timestamp
+                    )
+                    """
+                )
+            )
             review_columns = {row[1] for row in connection.execute(text("pragma table_info(reviews)"))}
             if "l2_theme" not in review_columns:
                 connection.execute(text("alter table reviews add column l2_theme varchar"))

@@ -55,6 +55,64 @@ function uniqueReviews(items) {
   return result;
 }
 
+function normalizeText(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function bestMatch(candidates, term, domainToken, idField) {
+  const normalizedTerm = normalizeText(term);
+  const normalizedDomain = normalizeText(domainToken);
+  const scored = candidates
+    .map((item) => {
+      const title = item.title || item.app_name || item.name || "";
+      const id = item[idField] || item.appId || item.id || "";
+      const haystack = `${normalizeText(title)} ${normalizeText(id)} ${normalizeText(item.developer || item.developerName || "")}`;
+      let score = 0;
+      if (normalizedDomain && haystack.includes(normalizedDomain)) score += 5;
+      if (normalizedTerm && haystack.includes(normalizedTerm)) score += 4;
+      if (normalizedTerm && normalizeText(title).startsWith(normalizedTerm)) score += 2;
+      return { item, score };
+    })
+    .sort((a, b) => b.score - a.score);
+  return scored[0] && scored[0].score > 0 ? scored[0].item : candidates[0];
+}
+
+async function resolveApps(input) {
+  const term = input.term || input.company_name || "";
+  const domainToken = input.domain_token || "";
+  const result = { play_id: "", app_id: "", play_candidates: [], appstore_candidates: [] };
+  if (!term) return result;
+
+  try {
+    const playCandidates = await gplay.search({
+      term,
+      country: input.country || "in",
+      lang: "en",
+      num: 5,
+    });
+    result.play_candidates = playCandidates.map((item) => ({ title: item.title, appId: item.appId, developer: item.developer }));
+    const play = bestMatch(playCandidates, term, domainToken, "appId");
+    result.play_id = play && play.appId ? play.appId : "";
+  } catch (error) {
+    result.play_error = String(error && error.message ? error.message : error).slice(0, 300);
+  }
+
+  try {
+    const appCandidates = await astore.search({
+      term,
+      country: input.country || "in",
+      num: 5,
+    });
+    result.appstore_candidates = appCandidates.map((item) => ({ title: item.title, id: item.id, appId: item.appId, developer: item.developer }));
+    const app = bestMatch(appCandidates, term, domainToken, "id");
+    result.app_id = app && app.id ? String(app.id) : "";
+  } catch (error) {
+    result.appstore_error = String(error && error.message ? error.message : error).slice(0, 300);
+  }
+
+  return result;
+}
+
 async function scrapePlay(input) {
   const maxReviews = Number(input.max_reviews || 3000);
   const throttle = Number(input.throttle || 10);
@@ -98,6 +156,10 @@ async function scrapeAppStore(input) {
 
 async function main() {
   const input = await readStdin();
+  if (input.mode === "resolve") {
+    process.stdout.write(JSON.stringify(await resolveApps(input)));
+    return;
+  }
   const source = input.source;
   if (source === "play") {
     process.stdout.write(JSON.stringify(await scrapePlay(input)));

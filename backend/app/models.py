@@ -56,6 +56,8 @@ class Company(Base):
     __tablename__ = "companies"
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=uuid_str)
+    owner_user_id: Mapped[Optional[str]] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True)
+    guest_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     play_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     app_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
@@ -74,6 +76,8 @@ class Run(Base):
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=uuid_str)
     company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
+    owner_user_id: Mapped[Optional[str]] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True)
+    guest_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     status: Mapped[str] = mapped_column(RunStatus, nullable=False, default="queued", index=True)
     model_used: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     source_counts: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
@@ -168,3 +172,23 @@ class Settings(Base):
         default=lambda: {"play": 1, "appstore": 1, "reddit": 1, "maps": 1, "mouthshut": 1},
     )
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=uuid_str)
+    email: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    display_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=uuid_str)
+    user_id: Mapped[str] = mapped_column(GUID(), ForeignKey("users.id"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

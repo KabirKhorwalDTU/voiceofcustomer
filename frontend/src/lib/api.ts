@@ -1,4 +1,14 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? "http://localhost:8000" : "");
+const GUEST_ID_KEY = "voc_guest_id";
+const AUTH_TOKEN_KEY = "voc_auth_token";
+const AUTH_USER_KEY = "voc_auth_user";
+
+export type AuthUser = {
+  id: string;
+  email: string;
+  display_name?: string | null;
+  created_at: string;
+};
 
 export type Company = {
   id: string;
@@ -112,6 +122,51 @@ export type Settings = {
   source_weights: Record<string, number>;
 };
 
+function makeGuestId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `guest_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`;
+}
+
+export function getGuestId() {
+  const existing = window.localStorage.getItem(GUEST_ID_KEY);
+  if (existing) return existing;
+  const next = makeGuestId();
+  window.localStorage.setItem(GUEST_ID_KEY, next);
+  return next;
+}
+
+export function getAuthUser(): AuthUser | null {
+  const raw = window.localStorage.getItem(AUTH_USER_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as AuthUser;
+  } catch {
+    return null;
+  }
+}
+
+export function clearAuth() {
+  window.localStorage.removeItem(AUTH_TOKEN_KEY);
+  window.localStorage.removeItem(AUTH_USER_KEY);
+}
+
+function isOperatorMode() {
+  const path = window.location.pathname;
+  return path.startsWith("/kabir") || path.startsWith("/runs/") || path.startsWith("/companies/");
+}
+
+function authHeaders() {
+  const headers: Record<string, string> = {
+    "X-Guest-Id": getGuestId(),
+  };
+  const token = window.localStorage.getItem(AUTH_TOKEN_KEY);
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (isOperatorMode()) headers["X-Operator-Mode"] = "true";
+  return headers;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   if (!API_BASE) {
     throw new Error("API backend is not configured. Set VITE_API_BASE_URL to the deployed FastAPI backend URL and redeploy the frontend.");
@@ -120,6 +175,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
     headers: {
       "Content-Type": "application/json",
+      ...authHeaders(),
       ...(options?.headers || {}),
     },
   });
@@ -132,10 +188,51 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   baseUrl: API_BASE,
-  submitRun(payload: { name: string; play_link: string; app_store_link: string; website: string; maps_enabled?: boolean; maps_location_hint?: string; reddit_enabled?: boolean }) {
+  login(email: string) {
+    return request<{ user: AuthUser; token: string; claimed_runs: number }>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, guest_id: getGuestId() }),
+    }).then((response) => {
+      window.localStorage.setItem(AUTH_TOKEN_KEY, response.token);
+      window.localStorage.setItem(AUTH_USER_KEY, JSON.stringify(response.user));
+      return response;
+    });
+  },
+  me() {
+    return request<AuthUser>("/api/auth/me").then((user) => {
+      window.localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+      return user;
+    });
+  },
+  logout() {
+    clearAuth();
+  },
+  submitRun(payload: { name: string; play_link?: string; app_store_link?: string; website?: string; maps_enabled?: boolean; maps_location_hint?: string; reddit_enabled?: boolean }) {
     return request<{ run: Run; deduped_existing: boolean }>("/api/runs", {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        play_link: "",
+        app_store_link: "",
+        website: "",
+        maps_location_hint: "India",
+        maps_enabled: false,
+        reddit_enabled: false,
+        ...payload,
+      }),
+    });
+  },
+  submitPublicRun(payload: { name: string; website: string }) {
+    return request<{ run: Run; deduped_existing: boolean }>("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        name: payload.name,
+        website: payload.website,
+        play_link: "",
+        app_store_link: "",
+        maps_enabled: true,
+        maps_location_hint: "India",
+        reddit_enabled: true,
+      }),
     });
   },
   runs() {
@@ -153,7 +250,7 @@ export const api = {
     if (!API_BASE) {
       return Promise.reject(new Error("API backend is not configured. Set VITE_API_BASE_URL to the deployed FastAPI backend URL and redeploy the frontend."));
     }
-    return fetch(`${API_BASE}/api/runs/${id}`, { method: "DELETE" }).then(async (response) => {
+    return fetch(`${API_BASE}/api/runs/${id}`, { method: "DELETE", headers: authHeaders() }).then(async (response) => {
       if (!response.ok) {
         const body = await response.text();
         let message = body || response.statusText;
@@ -191,5 +288,22 @@ export const api = {
   },
   downloadUrl(runId: string, fmt: "xlsx" | "csv" | "json") {
     return `${API_BASE}/api/runs/${runId}/downloads/${fmt}`;
+  },
+  async downloadRun(runId: string, fmt: "xlsx" | "csv" | "json") {
+    if (!API_BASE) {
+      throw new Error("API backend is not configured. Set VITE_API_BASE_URL to the deployed FastAPI backend URL and redeploy the frontend.");
+    }
+    const response = await fetch(`${API_BASE}/api/runs/${runId}/downloads/${fmt}`, { headers: authHeaders() });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(body || response.statusText);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `tagged_reviews.${fmt}`;
+    link.click();
+    URL.revokeObjectURL(url);
   },
 };

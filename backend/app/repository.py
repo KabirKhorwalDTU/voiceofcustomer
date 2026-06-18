@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import and_, case, cast, delete, desc, func, or_, select, String
 from sqlalchemy.orm import Session, joinedload
 
+from app.auth import Actor
 from app.models import Company, Review, Run, RunLog, Settings, Theme
 from app.pipeline.resolver import resolve_links
 from app.schemas import SubmitRunRequest
@@ -30,7 +31,31 @@ def update_settings(session: Session, values: Dict[str, Any]) -> Settings:
     return settings
 
 
-def create_or_get_company(session: Session, request: SubmitRunRequest) -> Company:
+def actor_filters(model, actor: Optional[Actor]):
+    if actor is None or actor.is_operator:
+        return []
+    if actor.user_id:
+        return [model.owner_user_id == actor.user_id]
+    if actor.guest_id:
+        return [model.guest_id == actor.guest_id, model.owner_user_id.is_(None)]
+    return [model.owner_user_id.is_(None), model.guest_id.is_(None)]
+
+
+def can_access_run(run: Run, actor: Optional[Actor]) -> bool:
+    if actor is not None and actor.is_operator:
+        return True
+    if actor is None:
+        return False
+    if not run.owner_user_id and not run.guest_id:
+        return False
+    if run.owner_user_id and actor.user_id == run.owner_user_id:
+        return True
+    if run.guest_id and actor.guest_id == run.guest_id and not run.owner_user_id:
+        return True
+    return False
+
+
+def create_or_get_company(session: Session, request: SubmitRunRequest, actor: Optional[Actor] = None) -> Company:
     resolved = resolve_links(request.play_link, request.app_store_link, request.website, request.name)
     clauses = []
     if resolved.play_id:
@@ -39,9 +64,12 @@ def create_or_get_company(session: Session, request: SubmitRunRequest) -> Compan
         clauses.append(Company.app_id == resolved.app_id)
     if resolved.domain:
         clauses.append(and_(Company.domain == resolved.domain, Company.name == request.name))
-    company = session.execute(select(Company).where(or_(*clauses))).scalars().first() if clauses else None
+    filters = actor_filters(Company, actor)
+    company = session.execute(select(Company).where(or_(*clauses), *filters)).scalars().first() if clauses else None
     if company is None:
         company = Company(
+            owner_user_id=actor.user_id if actor and actor.user_id else None,
+            guest_id=actor.guest_id if actor and actor.guest_id and not actor.user_id else None,
             name=request.name.strip(),
             play_id=resolved.play_id or None,
             app_id=resolved.app_id or None,
@@ -65,11 +93,11 @@ def create_or_get_company(session: Session, request: SubmitRunRequest) -> Compan
     return company
 
 
-def create_run(session: Session, request: SubmitRunRequest) -> Tuple[Run, bool]:
-    company = create_or_get_company(session, request)
+def create_run(session: Session, request: SubmitRunRequest, actor: Optional[Actor] = None) -> Tuple[Run, bool]:
+    company = create_or_get_company(session, request, actor)
     active = session.execute(
         select(Run)
-        .where(Run.company_id == company.id, Run.status.in_(ACTIVE_STATUSES))
+        .where(Run.company_id == company.id, Run.status.in_(ACTIVE_STATUSES), *actor_filters(Run, actor))
         .options(joinedload(Run.company))
         .order_by(desc(Run.created_at))
     ).scalars().first()
@@ -84,7 +112,14 @@ def create_run(session: Session, request: SubmitRunRequest) -> Tuple[Run, bool]:
         )
         return active, True
     settings = get_settings(session)
-    run = Run(company_id=company.id, status="queued", budget_cap=float(settings.per_run_budget_usd), company=company)
+    run = Run(
+        company_id=company.id,
+        owner_user_id=actor.user_id if actor and actor.user_id else None,
+        guest_id=actor.guest_id if actor and actor.guest_id and not actor.user_id else None,
+        status="queued",
+        budget_cap=float(settings.per_run_budget_usd),
+        company=company,
+    )
     session.add(run)
     session.flush()
     log_run_event(
@@ -107,14 +142,14 @@ def create_run(session: Session, request: SubmitRunRequest) -> Tuple[Run, bool]:
     return run, False
 
 
-def rerun_company_from_run(session: Session, run_id: str) -> Tuple[Run, bool]:
+def rerun_company_from_run(session: Session, run_id: str, actor: Optional[Actor] = None) -> Tuple[Run, bool]:
     source_run = get_run(session, run_id)
-    if not source_run:
+    if not source_run or not can_access_run(source_run, actor):
         raise KeyError("run not found")
     company = source_run.company
     active = session.execute(
         select(Run)
-        .where(Run.company_id == company.id, Run.status.in_(ACTIVE_STATUSES))
+        .where(Run.company_id == company.id, Run.status.in_(ACTIVE_STATUSES), *actor_filters(Run, actor))
         .options(joinedload(Run.company))
         .order_by(desc(Run.created_at))
     ).scalars().first()
@@ -129,7 +164,14 @@ def rerun_company_from_run(session: Session, run_id: str) -> Tuple[Run, bool]:
         )
         return active, True
     settings = get_settings(session)
-    run = Run(company_id=company.id, status="queued", budget_cap=float(settings.per_run_budget_usd), company=company)
+    run = Run(
+        company_id=company.id,
+        owner_user_id=source_run.owner_user_id,
+        guest_id=source_run.guest_id,
+        status="queued",
+        budget_cap=float(settings.per_run_budget_usd),
+        company=company,
+    )
     session.add(run)
     session.flush()
     log_run_event(
@@ -153,9 +195,11 @@ def rerun_company_from_run(session: Session, run_id: str) -> Tuple[Run, bool]:
     return run, False
 
 
-def delete_run_by_id(session: Session, run_id: str) -> bool:
+def delete_run_by_id(session: Session, run_id: str, actor: Optional[Actor] = None) -> bool:
     run = get_run(session, run_id)
     if not run:
+        return False
+    if not can_access_run(run, actor):
         return False
     if run.status in ACTIVE_STATUSES:
         raise ValueError("active runs cannot be deleted")
@@ -171,6 +215,18 @@ def list_runs(session: Session, limit: int = 250) -> List[Run]:
     return list(
         session.execute(
             select(Run).options(joinedload(Run.company)).order_by(desc(Run.created_at)).limit(limit)
+        ).scalars()
+    )
+
+
+def list_actor_runs(session: Session, actor: Actor, limit: int = 250) -> List[Run]:
+    return list(
+        session.execute(
+            select(Run)
+            .where(*actor_filters(Run, actor))
+            .options(joinedload(Run.company))
+            .order_by(desc(Run.created_at))
+            .limit(limit)
         ).scalars()
     )
 
@@ -201,9 +257,9 @@ def get_run(session: Session, run_id: str) -> Optional[Run]:
     return session.execute(select(Run).where(Run.id == run_id).options(joinedload(Run.company))).scalars().first()
 
 
-def get_run_results(session: Session, run_id: str) -> Tuple[Run, Company, List[Review], List[Theme]]:
+def get_run_results(session: Session, run_id: str, actor: Optional[Actor] = None) -> Tuple[Run, Company, List[Review], List[Theme]]:
     run = get_run(session, run_id)
-    if not run:
+    if not run or not can_access_run(run, actor):
         raise KeyError("run not found")
     company = run.company
     reviews = list(session.execute(select(Review).where(Review.run_id == run_id).order_by(desc(Review.date))).scalars())
@@ -214,6 +270,7 @@ def get_run_results(session: Session, run_id: str) -> Tuple[Run, Company, List[R
 def query_run_reviews(
     session: Session,
     run_id: str,
+    actor: Optional[Actor] = None,
     page: int = 1,
     page_size: int = 50,
     source: str = "",
@@ -225,6 +282,9 @@ def query_run_reviews(
     text_query: str = "",
     q: str = "",
 ) -> Tuple[List[Review], int]:
+    run = get_run(session, run_id)
+    if not run or not can_access_run(run, actor):
+        raise KeyError("run not found")
     page = max(page, 1)
     page_size = max(1, min(page_size, 100))
     filters = [Review.run_id == run_id]
@@ -272,12 +332,28 @@ def query_run_reviews(
     return rows, total
 
 
-def get_company_runs(session: Session, company_id: str) -> List[Run]:
+def get_company_runs(session: Session, company_id: str, actor: Optional[Actor] = None) -> List[Run]:
     return list(
         session.execute(
-            select(Run).where(Run.company_id == company_id).options(joinedload(Run.company)).order_by(desc(Run.created_at))
+            select(Run).where(Run.company_id == company_id, *actor_filters(Run, actor)).options(joinedload(Run.company)).order_by(desc(Run.created_at))
         ).scalars()
     )
+
+
+def claim_guest_workspace(session: Session, guest_id: str, user_id: str) -> int:
+    guest_id = guest_id.strip()
+    if not guest_id:
+        return 0
+    companies = session.execute(select(Company).where(Company.guest_id == guest_id, Company.owner_user_id.is_(None))).scalars().all()
+    runs = session.execute(select(Run).where(Run.guest_id == guest_id, Run.owner_user_id.is_(None))).scalars().all()
+    for company in companies:
+        company.owner_user_id = user_id
+        company.guest_id = None
+    for run in runs:
+        run.owner_user_id = user_id
+        run.guest_id = None
+    session.flush()
+    return len(runs)
 
 
 def set_run_status(session: Session, run: Run, status: str, error: Optional[str] = None) -> None:

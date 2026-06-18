@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ChevronDown, ChevronRight, Clipboard, Download, ExternalLink, RotateCcw } from "lucide-react";
 import { ResultsCharts } from "../components/Charts";
 import { StatusBadge } from "../components/StatusBadge";
@@ -30,6 +30,9 @@ const emptyFilters: ReviewFilters = {
 export function ResultsPage() {
   const { runId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const inProductWorkspace = location.pathname.startsWith("/app");
+  const basePath = location.pathname.startsWith("/kabir") || location.pathname.startsWith("/runs/") ? "/kabir" : "/app";
   const [results, setResults] = useState<Results | null>(null);
   const [reviewPage, setReviewPage] = useState<ReviewPage | null>(null);
   const [filters, setFilters] = useState<ReviewFilters>(emptyFilters);
@@ -138,7 +141,7 @@ export function ResultsPage() {
     setError("");
     try {
       const response = await api.rerun(results.run.id);
-      navigate(`/runs/${response.run.id}`);
+      navigate(`${basePath}/runs/${response.run.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start rerun");
     } finally {
@@ -168,7 +171,7 @@ export function ResultsPage() {
             <RotateCcw size={16} />
             Rerun
           </button>
-          <Link to="/" className="icon-button" title="Back to dashboard">
+          <Link to={inProductWorkspace ? "/app" : "/kabir"} className="icon-button" title="Back to dashboard">
             <ArrowLeft size={18} />
           </Link>
         </div>
@@ -296,10 +299,10 @@ export function ResultsPage() {
               Clear filters
             </button>
             {(["xlsx", "csv", "json"] as const).map((fmt) => (
-              <a className="secondary-button" href={api.downloadUrl(results.run.id, fmt)} key={fmt}>
+              <button className="secondary-button" type="button" onClick={() => api.downloadRun(results.run.id, fmt).catch((err) => setError(err.message))} key={fmt}>
                 <Download size={15} />
                 {fmt}
-              </a>
+              </button>
             ))}
           </div>
         </div>

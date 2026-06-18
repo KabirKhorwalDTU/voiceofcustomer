@@ -1,5 +1,8 @@
 import re
+import json
+import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 
@@ -37,4 +40,31 @@ def resolve_links(play_link: str, app_store_link: str, website: str, company_nam
     brand_keyword = domain_token or company_name.strip()
     if name_slug and (domain_token == name_slug or domain_token.endswith(name_slug)):
         brand_keyword = name_slug
+    if (not play_id or not app_id) and company_name:
+        discovered = discover_store_ids(company_name, domain_token)
+        play_id = play_id or discovered.get("play_id", "")
+        app_id = app_id or discovered.get("app_id", "")
     return ResolvedLinks(play_id=play_id, app_id=app_id, domain=domain, brand_keyword=brand_keyword)
+
+
+def discover_store_ids(company_name: str, domain_token: str) -> dict:
+    script = Path(__file__).resolve().parents[2] / "scrapers" / "app_reviews.js"
+    payload = {"mode": "resolve", "term": company_name, "domain_token": domain_token, "country": "in"}
+    try:
+        proc = subprocess.run(
+            ["node", str(script)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        return {}
+    if proc.returncode != 0:
+        return {}
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return {"play_id": str(data.get("play_id") or ""), "app_id": str(data.get("app_id") or "")}

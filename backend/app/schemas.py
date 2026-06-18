@@ -6,6 +6,26 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
+class AuthLoginRequest(BaseModel):
+    email: str = Field(min_length=3)
+    guest_id: str = ""
+
+
+class UserOut(BaseModel):
+    id: str
+    email: str
+    display_name: Optional[str] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class AuthLoginResponse(BaseModel):
+    user: UserOut
+    token: str
+    claimed_runs: int = 0
+
+
 class SubmitRunRequest(BaseModel):
     name: str = Field(min_length=1)
     play_link: str = ""

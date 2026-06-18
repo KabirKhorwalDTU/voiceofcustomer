@@ -3,15 +3,19 @@ import logging
 import math
 from typing import List
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
+from app.auth import Actor, clean_guest_id, create_or_get_user, create_user_session, resolve_actor
 from app.config import get_config
 from app.db import init_db, session_scope
+from app.models import User
 from app.pipeline.synth import build_deck_spec, build_summary, export_reviews
 from app.pipeline.worker import worker
 from app.repository import (
+    can_access_run,
+    claim_guest_workspace,
     create_run,
     delete_run_by_id,
     get_company_runs,
@@ -22,12 +26,25 @@ from app.repository import (
     get_run_logs,
     get_run_results,
     get_settings,
+    list_actor_runs,
     list_runs,
     query_run_reviews,
     rerun_company_from_run,
     update_settings,
 )
-from app.schemas import ResultsOut, ReviewPageOut, RunLogOut, RunOut, SettingsOut, SettingsUpdate, SubmitRunRequest, SubmitRunResponse
+from app.schemas import (
+    AuthLoginRequest,
+    AuthLoginResponse,
+    ResultsOut,
+    ReviewPageOut,
+    RunLogOut,
+    RunOut,
+    SettingsOut,
+    SettingsUpdate,
+    SubmitRunRequest,
+    SubmitRunResponse,
+    UserOut,
+)
 
 
 _LATEST_LOG_NOT_PROVIDED = object()
@@ -64,6 +81,10 @@ def health() -> dict:
     return {"ok": True, "bootstrap_ready": bool(getattr(app.state, "bootstrap_ready", False))}
 
 
+def header_actor(session, authorization: str, x_guest_id: str, x_operator_mode: str) -> Actor:
+    return resolve_actor(session, authorization=authorization, guest_id=x_guest_id, operator_mode=x_operator_mode)
+
+
 async def bootstrap_backend() -> None:
     for attempt in range(1, 13):
         try:
@@ -81,36 +102,91 @@ async def bootstrap_backend() -> None:
     logger.error("Backend bootstrap failed after all retry attempts.")
 
 
-@app.post("/api/runs", response_model=SubmitRunResponse)
-def submit_run(request: SubmitRunRequest) -> SubmitRunResponse:
+@app.post("/api/auth/login", response_model=AuthLoginResponse)
+def login(request: AuthLoginRequest) -> AuthLoginResponse:
     with session_scope() as session:
-        run, existing = create_run(session, request)
+        user = create_or_get_user(session, request.email)
+        claimed_runs = claim_guest_workspace(session, clean_guest_id(request.guest_id), user.id)
+        token, _ = create_user_session(session, user)
+        return AuthLoginResponse(user=UserOut.model_validate(user), token=token, claimed_runs=claimed_runs)
+
+
+@app.get("/api/auth/me", response_model=UserOut)
+def me(
+    authorization: str = Header(default=""),
+    x_guest_id: str = Header(default=""),
+    x_operator_mode: str = Header(default=""),
+) -> UserOut:
+    with session_scope() as session:
+        actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
+        if not actor.user_id:
+            raise HTTPException(status_code=401, detail="not signed in")
+        user = session.get(User, actor.user_id)
+        if user is None:
+            raise HTTPException(status_code=401, detail="not signed in")
+        return UserOut.model_validate(user)
+
+
+@app.post("/api/runs", response_model=SubmitRunResponse)
+def submit_run(
+    request: SubmitRunRequest,
+    authorization: str = Header(default=""),
+    x_guest_id: str = Header(default=""),
+    x_operator_mode: str = Header(default=""),
+) -> SubmitRunResponse:
+    with session_scope() as session:
+        actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
+        if not (actor.is_operator or actor.user_id or actor.guest_id):
+            raise HTTPException(status_code=401, detail="guest or signed-in session required")
+        run, existing = create_run(session, request, actor)
         session.flush()
         return SubmitRunResponse(run=run_out(session, run), deduped_existing=existing)
 
 
 @app.get("/api/runs", response_model=List[RunOut])
-def runs() -> List[RunOut]:
+def runs(
+    authorization: str = Header(default=""),
+    x_guest_id: str = Header(default=""),
+    x_operator_mode: str = Header(default=""),
+) -> List[RunOut]:
     with session_scope() as session:
-        run_rows = list_runs(session)
+        actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
+        if actor.is_operator:
+            run_rows = list_runs(session)
+        elif actor.user_id or actor.guest_id:
+            run_rows = list_actor_runs(session, actor)
+        else:
+            run_rows = []
         latest_logs = get_latest_run_logs(session, [run.id for run in run_rows])
         return [run_out(session, run, latest_logs.get(run.id)) for run in run_rows]
 
 
 @app.get("/api/runs/{run_id}", response_model=RunOut)
-def run_status(run_id: str) -> RunOut:
+def run_status(
+    run_id: str,
+    authorization: str = Header(default=""),
+    x_guest_id: str = Header(default=""),
+    x_operator_mode: str = Header(default=""),
+) -> RunOut:
     with session_scope() as session:
+        actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
         run = get_run(session, run_id)
-        if not run:
+        if not run or not can_access_run(run, actor):
             raise HTTPException(status_code=404, detail="run not found")
         return run_out(session, run)
 
 
 @app.post("/api/runs/{run_id}/rerun", response_model=SubmitRunResponse)
-def rerun(run_id: str) -> SubmitRunResponse:
+def rerun(
+    run_id: str,
+    authorization: str = Header(default=""),
+    x_guest_id: str = Header(default=""),
+    x_operator_mode: str = Header(default=""),
+) -> SubmitRunResponse:
     with session_scope() as session:
+        actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
         try:
-            run, existing = rerun_company_from_run(session, run_id)
+            run, existing = rerun_company_from_run(session, run_id, actor)
         except KeyError:
             raise HTTPException(status_code=404, detail="run not found") from None
         session.flush()
@@ -118,10 +194,16 @@ def rerun(run_id: str) -> SubmitRunResponse:
 
 
 @app.delete("/api/runs/{run_id}", status_code=204)
-def delete_run(run_id: str) -> Response:
+def delete_run(
+    run_id: str,
+    authorization: str = Header(default=""),
+    x_guest_id: str = Header(default=""),
+    x_operator_mode: str = Header(default=""),
+) -> Response:
     with session_scope() as session:
+        actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
         try:
-            deleted = delete_run_by_id(session, run_id)
+            deleted = delete_run_by_id(session, run_id, actor)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from None
         if not deleted:
@@ -130,18 +212,30 @@ def delete_run(run_id: str) -> Response:
 
 
 @app.get("/api/companies/{company_id}/runs", response_model=List[RunOut])
-def company_runs(company_id: str) -> List[RunOut]:
+def company_runs(
+    company_id: str,
+    authorization: str = Header(default=""),
+    x_guest_id: str = Header(default=""),
+    x_operator_mode: str = Header(default=""),
+) -> List[RunOut]:
     with session_scope() as session:
-        run_rows = get_company_runs(session, company_id)
+        actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
+        run_rows = get_company_runs(session, company_id, actor)
         latest_logs = get_latest_run_logs(session, [run.id for run in run_rows])
         return [run_out(session, run, latest_logs.get(run.id)) for run in run_rows]
 
 
 @app.get("/api/runs/{run_id}/results", response_model=ResultsOut)
-def results(run_id: str) -> ResultsOut:
+def results(
+    run_id: str,
+    authorization: str = Header(default=""),
+    x_guest_id: str = Header(default=""),
+    x_operator_mode: str = Header(default=""),
+) -> ResultsOut:
     with session_scope() as session:
+        actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
         try:
-            run, company, reviews, themes = get_run_results(session, run_id)
+            run, company, reviews, themes = get_run_results(session, run_id, actor)
         except KeyError:
             raise HTTPException(status_code=404, detail="run not found") from None
         summary = build_summary(run, reviews, themes)
@@ -171,40 +265,60 @@ def run_reviews(
     date_query: str = "",
     text_query: str = "",
     q: str = "",
+    authorization: str = Header(default=""),
+    x_guest_id: str = Header(default=""),
+    x_operator_mode: str = Header(default=""),
 ) -> ReviewPageOut:
     with session_scope() as session:
-        if not get_run(session, run_id):
-            raise HTTPException(status_code=404, detail="run not found")
-        rows, total = query_run_reviews(
-            session,
-            run_id,
-            page=page,
-            page_size=page_size,
-            source=source,
-            theme=theme,
-            l2_theme=l2_theme,
-            rating=rating,
-            review_hash=review_hash,
-            date_query=date_query,
-            text_query=text_query,
-            q=q,
-        )
+        actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
+        try:
+            rows, total = query_run_reviews(
+                session,
+                run_id,
+                actor=actor,
+                page=page,
+                page_size=page_size,
+                source=source,
+                theme=theme,
+                l2_theme=l2_theme,
+                rating=rating,
+                review_hash=review_hash,
+                date_query=date_query,
+                text_query=text_query,
+                q=q,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="run not found") from None
         return ReviewPageOut(items=rows, total=total, page=page, page_size=page_size, pages=max(1, math.ceil(total / page_size)))
 
 
 @app.get("/api/runs/{run_id}/logs", response_model=List[RunLogOut])
-def run_logs(run_id: str) -> List[RunLogOut]:
+def run_logs(
+    run_id: str,
+    authorization: str = Header(default=""),
+    x_guest_id: str = Header(default=""),
+    x_operator_mode: str = Header(default=""),
+) -> List[RunLogOut]:
     with session_scope() as session:
-        if not get_run(session, run_id):
+        actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
+        run = get_run(session, run_id)
+        if not run or not can_access_run(run, actor):
             raise HTTPException(status_code=404, detail="run not found")
         return [RunLogOut.model_validate(row) for row in get_run_logs(session, run_id)]
 
 
 @app.get("/api/runs/{run_id}/downloads/{fmt}")
-def download(run_id: str, fmt: str) -> Response:
+def download(
+    run_id: str,
+    fmt: str,
+    authorization: str = Header(default=""),
+    x_guest_id: str = Header(default=""),
+    x_operator_mode: str = Header(default=""),
+) -> Response:
     with session_scope() as session:
+        actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
         try:
-            _, _, reviews, _ = get_run_results(session, run_id)
+            _, _, reviews, _ = get_run_results(session, run_id, actor)
         except KeyError:
             raise HTTPException(status_code=404, detail="run not found") from None
         try:
@@ -219,24 +333,45 @@ def download(run_id: str, fmt: str) -> Response:
 
 
 @app.get("/api/runs/{run_id}/deck-spec.md")
-def deck_spec(run_id: str) -> Response:
+def deck_spec(
+    run_id: str,
+    authorization: str = Header(default=""),
+    x_guest_id: str = Header(default=""),
+    x_operator_mode: str = Header(default=""),
+) -> Response:
     with session_scope() as session:
+        actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
         try:
-            run, company, reviews, themes = get_run_results(session, run_id)
+            run, company, reviews, themes = get_run_results(session, run_id, actor)
         except KeyError:
             raise HTTPException(status_code=404, detail="run not found") from None
         return Response(build_deck_spec(company, run, reviews, themes), media_type="text/markdown")
 
 
 @app.get("/api/settings", response_model=SettingsOut)
-def read_settings() -> SettingsOut:
+def read_settings(
+    authorization: str = Header(default=""),
+    x_guest_id: str = Header(default=""),
+    x_operator_mode: str = Header(default=""),
+) -> SettingsOut:
     with session_scope() as session:
+        actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
+        if not actor.is_operator:
+            raise HTTPException(status_code=403, detail="operator mode required")
         return SettingsOut.model_validate(get_settings(session))
 
 
 @app.put("/api/settings", response_model=SettingsOut)
-def write_settings(update: SettingsUpdate) -> SettingsOut:
+def write_settings(
+    update: SettingsUpdate,
+    authorization: str = Header(default=""),
+    x_guest_id: str = Header(default=""),
+    x_operator_mode: str = Header(default=""),
+) -> SettingsOut:
     with session_scope() as session:
+        actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
+        if not actor.is_operator:
+            raise HTTPException(status_code=403, detail="operator mode required")
         settings = update_settings(session, update.model_dump(exclude_unset=True))
         return SettingsOut.model_validate(settings)
 
