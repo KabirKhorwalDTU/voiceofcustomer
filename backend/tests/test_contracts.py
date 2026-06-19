@@ -102,6 +102,8 @@ def test_deck_spec_emits_frozen_contract_b_slides():
     assert "L2 breakdown for top L1 themes" in deck
     assert "Refunds: not processed." in deck
     assert "Other share:" in deck
+    assert "Google Play (1)" in deck
+    assert "Reddit" not in deck
 
 
 def test_theme_humanizer_does_not_mangle_overpriced_labels():

@@ -252,6 +252,19 @@ def build_deck_spec(company: Company, run: Run, reviews: List[Review], themes: L
         top = themes[0]
         headline = f"Top signal: {humanize_theme(top.theme)} at {int(round(float(top.normalized_frequency or 0) * 100))}% of classified feedback."
     source_mix = ", ".join(f"{source}: {count}" for source, count in summary["source_mix"].items()) or "No data"
+    source_names = {
+        "play": "Google Play",
+        "appstore": "App Store",
+        "maps": "Google Maps",
+        "reddit": "Reddit",
+        "mouthshut": "MouthShut",
+    }
+    collected_sources = [
+        f"{source_names.get(source, source)} ({count})"
+        for source, count in summary["source_mix"].items()
+        if int(count or 0) > 0
+    ]
+    source_sentence = ", ".join(collected_sources) if collected_sources else "no completed public sources"
     theme_lines = "\n".join(
         f"- {theme.rank}. {humanize_theme(theme.theme)}: count={theme.count}, share={int(round(float(theme.normalized_frequency or 0) * 100))}%, score={theme.theme_score:.3f}"
         for theme in themes[:8]
@@ -277,7 +290,7 @@ def build_deck_spec(company: Company, run: Run, reviews: List[Review], themes: L
 
 ## Slide 1 - About the applicant + project + headline finding
 
-Applicant/project: Voice of Customer analysis for {company.name}. Public app-store, Reddit, Google Maps, and MouthShut feedback was collected and classified into L1 issue themes and L2 sub-issues.
+Applicant/project: Voice of Customer analysis for {company.name}. Public feedback from {source_sentence} was collected and classified into L1 issue themes and L2 sub-issues.
 
 Headline finding: {headline}
 
