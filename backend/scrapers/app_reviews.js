@@ -65,16 +65,28 @@ function bestMatch(candidates, term, domainToken, idField) {
   const scored = candidates
     .map((item) => {
       const title = item.title || item.app_name || item.name || "";
-      const id = item[idField] || item.appId || item.id || "";
+      const id = item[idField] || item.appId || item.id || extractStoreId(item.url, idField) || "";
+      if (!id) return { item, id, score: -1 };
       const haystack = `${normalizeText(title)} ${normalizeText(id)} ${normalizeText(item.developer || item.developerName || "")}`;
       let score = 0;
       if (normalizedDomain && haystack.includes(normalizedDomain)) score += 5;
       if (normalizedTerm && haystack.includes(normalizedTerm)) score += 4;
       if (normalizedTerm && normalizeText(title).startsWith(normalizedTerm)) score += 2;
-      return { item, score };
+      return { item, id, score };
     })
     .sort((a, b) => b.score - a.score);
-  return scored[0] && scored[0].score > 0 ? scored[0].item : candidates[0];
+  if (!scored[0] || scored[0].score < 0) return null;
+  return scored[0].score > 0 ? { ...scored[0].item, [idField]: scored[0].id } : null;
+}
+
+function extractStoreId(url, idField) {
+  if (!url || idField !== "appId") return "";
+  try {
+    return new URL(url).searchParams.get("id") || "";
+  } catch (_) {
+    const match = String(url).match(/[?&]id=([^&]+)/);
+    return match ? match[1] : "";
+  }
 }
 
 async function resolveApps(input) {
@@ -90,7 +102,7 @@ async function resolveApps(input) {
       lang: "en",
       num: 5,
     });
-    result.play_candidates = playCandidates.map((item) => ({ title: item.title, appId: item.appId, developer: item.developer }));
+    result.play_candidates = playCandidates.map((item) => ({ title: item.title, appId: item.appId || extractStoreId(item.url, "appId"), developer: item.developer }));
     const play = bestMatch(playCandidates, term, domainToken, "appId");
     result.play_id = play && play.appId ? play.appId : "";
   } catch (error) {

@@ -242,9 +242,21 @@ def test_maps_actor_input_uses_lowest_rating_india_cap():
 
 
 def test_places_match_brand_prefixed_location_names():
-    place = {"displayName": {"text": "Snabbit Kadubeesanahalli Training Centre"}}
+    place = {"displayName": {"text": "Snabbit Kadubeesanahalli Training Centre"}, "websiteUri": "https://snabbit.com"}
 
     assert place_matches_company(place, type("Company", (), {"brand_keyword": "snabbit", "name": "Snabbit", "domain": "snabbit.com"}))
+
+
+def test_places_reject_ambiguous_brand_name_without_domain_match():
+    place = {"displayName": {"text": "GLANCE INDIA - Non Woven Bags Manufacturer in Delhi"}}
+
+    assert not place_matches_company(place, type("Company", (), {"brand_keyword": "glance", "name": "Glance", "domain": "glance.com"}))
+
+
+def test_places_reject_conflicting_place_website():
+    place = {"displayName": {"text": "Glance India"}, "websiteUri": "https://example-bags.in"}
+
+    assert not place_matches_company(place, type("Company", (), {"brand_keyword": "glance", "name": "Glance", "domain": "glance.com"}))
 
 
 def test_apify_cost_estimates_use_actor_event_pricing():

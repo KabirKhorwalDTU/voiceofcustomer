@@ -4,6 +4,7 @@ import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from urllib.parse import urlparse
 
 import httpx
 
@@ -230,16 +231,18 @@ def place_matches_company(place: Dict[str, Any], company: Any) -> bool:
     keyword = str(company.brand_keyword or company.name or "").lower()
     normalized_name = re.sub(r"[^a-z0-9]+", "", name)
     normalized_keyword = re.sub(r"[^a-z0-9]+", "", keyword)
+    website_uri = str(place.get("websiteUri") or "").lower()
+    website_host = urlparse(website_uri if "://" in website_uri else f"https://{website_uri}").netloc.replace("www.", "") if website_uri else ""
+    if domain and website_host:
+        if website_host == domain or website_host.endswith(f".{domain}"):
+            return True
+        return False
     if normalized_keyword and normalized_name == normalized_keyword:
-        return True
-    if normalized_keyword and normalized_keyword in normalized_name:
         return True
     if domain:
         domain_token = domain.split(".")[0]
         normalized_domain = re.sub(r"[^a-z0-9]+", "", domain_token)
         if normalized_domain and normalized_name == normalized_domain:
-            return True
-        if normalized_domain and normalized_domain in normalized_name:
             return True
     return False
 
@@ -257,7 +260,7 @@ async def discover_places(company: Any, config: AppConfig) -> Tuple[List[str], L
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": config.google_maps_api_key,
-        "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount",
+        "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.websiteUri",
     }
     all_places: List[Dict[str, Any]] = []
     matched_places: List[Dict[str, Any]] = []

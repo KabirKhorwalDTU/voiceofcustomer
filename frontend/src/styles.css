@@ -156,6 +156,40 @@ h3 {
   white-space: nowrap;
 }
 
+.public-source-toggle {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 8px;
+  align-items: center;
+  min-width: 210px;
+  padding: 8px 10px;
+  color: #264340;
+  background: #f6faf9;
+  border: 1px solid #d9e2df;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.public-source-toggle input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: #00685f;
+}
+
+.public-source-toggle span {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.public-source-toggle small {
+  grid-column: 2;
+  margin-top: 2px;
+  color: #657270;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .landing-error {
   margin: 10px 0 0;
 }

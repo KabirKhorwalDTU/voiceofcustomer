@@ -9,6 +9,7 @@ export function LandingPage() {
   const navigate = useNavigate();
   const [name, setName] = useState("");
   const [website, setWebsite] = useState("");
+  const [redditEnabled, setRedditEnabled] = useState(false);
   const [email, setEmail] = useState("");
   const [user, setUser] = useState<AuthUser | null>(() => getAuthUser());
   const [authOpen, setAuthOpen] = useState(false);
@@ -21,7 +22,7 @@ export function LandingPage() {
     setBusy(true);
     setError("");
     try {
-      const response = await api.submitPublicRun({ name, website });
+      const response = await api.submitPublicRun({ name, website, reddit_enabled: redditEnabled });
       navigate(`/app/runs/${response.run.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start analysis");
@@ -84,6 +85,11 @@ export function LandingPage() {
             <label>
               Company website
               <input value={website} onChange={(event) => setWebsite(event.target.value)} placeholder="https://firstclub.com" required />
+            </label>
+            <label className="public-source-toggle">
+              <input type="checkbox" checked={redditEnabled} onChange={(event) => setRedditEnabled(event.target.checked)} />
+              <span>Include Reddit mentions</span>
+              <small>Optional context. Keep it off for broad or ambiguous brand names.</small>
             </label>
             <button className="primary-button" disabled={busy}>
               Start analysis

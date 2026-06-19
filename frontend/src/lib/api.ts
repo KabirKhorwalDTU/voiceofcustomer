@@ -221,17 +221,16 @@ export const api = {
       }),
     });
   },
-  submitPublicRun(payload: { name: string; website: string }) {
+  submitPublicRun(payload: { name: string; website: string; reddit_enabled?: boolean }) {
     return request<{ run: Run; deduped_existing: boolean }>("/api/runs", {
       method: "POST",
       body: JSON.stringify({
-        name: payload.name,
-        website: payload.website,
         play_link: "",
         app_store_link: "",
         maps_enabled: true,
         maps_location_hint: "India",
-        reddit_enabled: true,
+        reddit_enabled: false,
+        ...payload,
       }),
     });
   },
