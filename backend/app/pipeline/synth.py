@@ -247,6 +247,8 @@ def volume_over_time(reviews: Iterable[Review]) -> Dict[str, int]:
 
 def build_deck_spec(company: Company, run: Run, reviews: List[Review], themes: List[Theme], summary: Optional[Dict[str, Any]] = None) -> str:
     summary = summary or build_summary(run, reviews, themes)
+    goals = [str(goal) for goal in (company.analysis_goals or []) if str(goal).strip()]
+    goal_sentence = "; ".join(goals) if goals else "Understand recurring customer feedback"
     headline = "No classified themes yet."
     if themes:
         top = themes[0]
@@ -293,6 +295,8 @@ def build_deck_spec(company: Company, run: Run, reviews: List[Review], themes: L
 ## Slide 1 - About the applicant + project + headline finding
 
 Applicant/project: Voice of Customer analysis for {company.name}. Public feedback from {source_sentence} was collected and classified into L1 issue themes and L2 sub-issues.
+
+Listening objective: {goal_sentence}.
 
 Headline finding: {headline}
 
