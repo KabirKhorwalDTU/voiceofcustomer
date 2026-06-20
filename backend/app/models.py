@@ -49,7 +49,18 @@ RunStatus = Enum(
     native_enum=True,
     create_type=False,
 )
-ReviewSource = Enum("play", "appstore", "reddit", "maps", "mouthshut", name="review_source", native_enum=True, create_type=False)
+ReviewSource = Enum(
+    "play",
+    "appstore",
+    "reddit",
+    "maps",
+    "mouthshut",
+    "instagram",
+    "twitter",
+    name="review_source",
+    native_enum=True,
+    create_type=False,
+)
 
 
 class Company(Base):
@@ -66,6 +77,13 @@ class Company(Base):
     maps_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     maps_location_hint: Mapped[str] = mapped_column(String, nullable=False, default="India")
     reddit_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    business_type: Mapped[str] = mapped_column(String, nullable=False, default="other")
+    selected_sources: Mapped[List[str]] = mapped_column(JSON, nullable=False, default=lambda: ["play", "appstore"])
+    analysis_goals: Mapped[List[str]] = mapped_column(JSON, nullable=False, default=list)
+    maps_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    instagram_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    twitter_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    mouthshut_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     runs: Mapped[List["Run"]] = relationship(back_populates="company")
@@ -169,7 +187,7 @@ class Settings(Base):
     source_weights: Mapped[Dict[str, float]] = mapped_column(
         JSON,
         nullable=False,
-        default=lambda: {"play": 1, "appstore": 1, "reddit": 1, "maps": 1, "mouthshut": 1},
+        default=lambda: {"play": 1, "appstore": 1, "reddit": 1, "maps": 1, "mouthshut": 1, "instagram": 1, "twitter": 1},
     )
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

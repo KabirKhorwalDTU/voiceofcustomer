@@ -8,7 +8,8 @@ from sqlalchemy.orm import sessionmaker
 
 from app.config import AppConfig
 from app.models import Base, Company, Review, Run, RunLog, Theme
-from app.pipeline.apify import build_actor_input, estimate_cost, place_matches_company, redact_error, scrape_sources
+from app.onboarding import normalize_sources, recommended_sources, selected_sources_for_company
+from app.pipeline.apify import build_actor_input, disabled_source_reason, estimate_cost, place_matches_company, redact_error, scrape_sources
 from app.config import get_config
 from app.pipeline.cleaner import clean_and_dedup, normalize_text, review_hash
 from app.pipeline.gateway import LLMGateway
@@ -36,6 +37,19 @@ class TestCompany:
     maps_enabled = False
     maps_location_hint = "India"
     reddit_enabled = True
+
+
+def test_business_type_recommendations_and_source_order_are_stable():
+    assert recommended_sources("app") == ["play", "appstore"]
+    assert recommended_sources("local_business") == ["maps", "instagram"]
+    assert normalize_sources(["twitter", "maps", "maps"], "other") == ["maps", "twitter"]
+    assert normalize_sources([], "creator_brand") == ["instagram", "twitter"]
+
+
+def test_legacy_source_flags_are_preserved_when_no_saved_source_plan_exists():
+    company = type("Company", (), {"selected_sources": None, "business_type": "app", "maps_enabled": True, "reddit_enabled": True})()
+
+    assert selected_sources_for_company(company) == ["play", "appstore", "maps", "reddit"]
 
 
 def test_resolver_extracts_store_ids_and_brand_keyword():
@@ -239,6 +253,25 @@ def test_maps_actor_input_uses_lowest_rating_india_cap():
     assert payload["maxReviews"] == 100
     assert payload["reviewsSort"] == "lowestRanking"
     assert payload["reviewsOrigin"] == "google"
+
+
+def test_mouthshut_actor_input_requires_a_known_review_page():
+    company = type("Company", (), {"mouthshut_url": "https://www.mouthshut.com/product-reviews/example-reviews-1"})()
+
+    payload = build_actor_input("mouthshut", company, 5000)
+
+    assert payload == {
+        "urls": ["https://www.mouthshut.com/product-reviews/example-reviews-1"],
+        "item_limit": 100,
+        "proxyConfiguration": {"useApifyProxy": False},
+    }
+
+
+def test_not_selected_source_never_enters_scrape_plan():
+    company = type("Company", (), {"selected_sources": ["maps"], "business_type": "local_business", "maps_enabled": True, "reddit_enabled": False})()
+
+    assert disabled_source_reason("maps", company) is None
+    assert disabled_source_reason("instagram", company) == "not_selected"
 
 
 def test_places_match_brand_prefixed_location_names():
@@ -606,9 +639,9 @@ def test_dev_ingestion_fallback_respects_optional_source_toggles():
         assert counts["reddit"] == 0
         assert counts["maps"] == 0
         assert completeness["reddit"]["status"] == "disabled"
-        assert completeness["reddit"]["reason"] == "reddit_opt_in_false"
+        assert completeness["reddit"]["reason"] == "not_selected"
         assert completeness["maps"]["status"] == "disabled"
-        assert completeness["maps"]["reason"] == "maps_opt_in_false"
+        assert completeness["maps"]["reason"] == "not_selected"
         assert completeness["mouthshut"]["status"] == "disabled"
 
     asyncio.run(run())

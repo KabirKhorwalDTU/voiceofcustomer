@@ -11,6 +11,8 @@ from app.auth import Actor, clean_guest_id, create_or_get_user, create_user_sess
 from app.config import get_config
 from app.db import init_db, session_scope
 from app.models import User
+from app.onboarding import normalize_business_type, recommended_sources, source_catalog
+from app.pipeline.resolver import resolve_links
 from app.pipeline.synth import build_deck_spec, build_summary, export_reviews
 from app.pipeline.worker import worker
 from app.repository import (
@@ -35,6 +37,8 @@ from app.repository import (
 from app.schemas import (
     AuthLoginRequest,
     AuthLoginResponse,
+    CompanyDiscoveryOut,
+    CompanyDiscoveryRequest,
     ResultsOut,
     ReviewPageOut,
     RunLogOut,
@@ -125,6 +129,28 @@ def me(
         if user is None:
             raise HTTPException(status_code=401, detail="not signed in")
         return UserOut.model_validate(user)
+
+
+@app.post("/api/onboarding/discover", response_model=CompanyDiscoveryOut)
+def discover_company(request: CompanyDiscoveryRequest) -> CompanyDiscoveryOut:
+    """Resolve cheap public identifiers before asking a small business for more links."""
+    resolved = resolve_links("", "", request.website, request.name)
+    business_type = normalize_business_type(request.business_type)
+    if business_type == "other" and (resolved.play_id or resolved.app_id):
+        business_type = "app"
+    display_name = request.name.strip()
+    icon_text = "".join(part[:1] for part in display_name.split()[:2]).upper() or "VO"
+    return CompanyDiscoveryOut(
+        name=display_name,
+        domain=resolved.domain,
+        brand_keyword=resolved.brand_keyword,
+        play_id=resolved.play_id,
+        app_id=resolved.app_id,
+        icon_text=icon_text,
+        business_type=business_type,
+        recommended_sources=recommended_sources(business_type),
+        source_catalog=source_catalog(),
+    )
 
 
 @app.post("/api/runs", response_model=SubmitRunResponse)

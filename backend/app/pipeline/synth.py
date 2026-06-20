@@ -258,6 +258,8 @@ def build_deck_spec(company: Company, run: Run, reviews: List[Review], themes: L
         "maps": "Google Maps",
         "reddit": "Reddit",
         "mouthshut": "MouthShut",
+        "instagram": "Instagram",
+        "twitter": "X / Twitter",
     }
     collected_sources = [
         f"{source_names.get(source, source)} ({count})"

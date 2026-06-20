@@ -1,17 +1,15 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowRight, Clock3, LockKeyhole, Plus, RotateCcw, Search, Trash2 } from "lucide-react";
+import { Clock3, LockKeyhole, RotateCcw, Search, Trash2 } from "lucide-react";
 import { api, AuthUser, getAuthUser, Run } from "../lib/api";
 import { StatusBadge } from "../components/StatusBadge";
+import { OnboardingFlow } from "../components/OnboardingFlow";
 
 const ACTIVE = new Set(["queued", "scraping", "classifying"]);
 
 export function ProductWorkspace() {
   const navigate = useNavigate();
   const [runs, setRuns] = useState<Run[]>([]);
-  const [name, setName] = useState("");
-  const [website, setWebsite] = useState("");
-  const [redditEnabled, setRedditEnabled] = useState(false);
   const [email, setEmail] = useState("");
   const [query, setQuery] = useState("");
   const [user, setUser] = useState<AuthUser | null>(() => getAuthUser());
@@ -37,24 +35,6 @@ export function ProductWorkspace() {
     if (!needle) return runs;
     return runs.filter((run) => [run.company?.name || "", run.current_stage, run.status, run.id].some((value) => value.toLowerCase().includes(needle)));
   }, [runs, query]);
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    if (!name.trim() || !website.trim()) return;
-    setBusy(true);
-    setError("");
-    try {
-      const response = await api.submitPublicRun({ name, website, reddit_enabled: redditEnabled });
-      setName("");
-      setWebsite("");
-      await loadRuns();
-      navigate(`/app/runs/${response.run.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not start analysis");
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function signIn(event: FormEvent) {
     event.preventDefault();
@@ -132,35 +112,15 @@ export function ProductWorkspace() {
       {error ? <section className="banner danger">{error}</section> : null}
 
       <section className="workspace-grid">
-        <form className="section-block product-submit-panel" onSubmit={submit}>
+        <section className="section-block product-submit-panel">
           <div className="section-title-row">
             <div>
               <h2>New analysis</h2>
-              <p>Only company name and website are needed. Store links and source discovery happen automatically.</p>
+              <p>Start with a business name. We recommend sources, then ask only for the details that improve matching.</p>
             </div>
-            <Plus size={18} />
           </div>
-          <label>
-            Company name
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g., Snabbit" required />
-          </label>
-          <label>
-            Company website
-            <input value={website} onChange={(event) => setWebsite(event.target.value)} placeholder="https://snabbit.com" required />
-          </label>
-          <label className="public-source-toggle">
-            <input type="checkbox" checked={redditEnabled} onChange={(event) => setRedditEnabled(event.target.checked)} />
-            <span>Include Reddit mentions</span>
-            <small>Optional. It can add useful context for distinctive brand names, but is off by default to avoid off-topic matches.</small>
-          </label>
-          <div className="workspace-source-note">
-            Play Store · App Store · India Maps reviews. Reddit is optional; MouthShut is disabled.
-          </div>
-          <button className="primary-button" disabled={busy}>
-            Start run
-            <ArrowRight size={17} />
-          </button>
-        </form>
+          <OnboardingFlow compact onStarted={async (runId) => { await loadRuns(); navigate(`/app/runs/${runId}`); }} />
+        </section>
 
         <section className="section-block workspace-status-panel">
           <div className="section-title-row">

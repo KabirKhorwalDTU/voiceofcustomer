@@ -7,7 +7,7 @@ exception
 end $$;
 
 do $$ begin
-    create type review_source as enum ('play', 'appstore', 'reddit', 'maps', 'mouthshut');
+    create type review_source as enum ('play', 'appstore', 'reddit', 'maps', 'mouthshut', 'instagram', 'twitter');
 exception
     when duplicate_object then null;
 end $$;
@@ -22,6 +22,13 @@ create table if not exists companies (
     maps_enabled boolean not null default false,
     maps_location_hint text not null default 'India',
     reddit_enabled boolean not null default false,
+    business_type text not null default 'other',
+    selected_sources jsonb not null default '["play", "appstore"]'::jsonb,
+    analysis_goals jsonb not null default '[]'::jsonb,
+    maps_url text,
+    instagram_url text,
+    twitter_url text,
+    mouthshut_url text,
     created_at timestamptz not null default now()
 );
 
@@ -128,7 +135,7 @@ create table if not exists settings (
     recency_window_days integer not null default 90,
     dedup_threshold numeric(5, 4) not null default 0.86,
     per_run_budget_usd numeric(10, 4) not null default 1,
-    source_weights jsonb not null default '{"play":1,"appstore":1,"reddit":1,"maps":1,"mouthshut":1}'::jsonb,
+    source_weights jsonb not null default '{"play":1,"appstore":1,"reddit":1,"maps":1,"mouthshut":1,"instagram":1,"twitter":1}'::jsonb,
     updated_at timestamptz not null default now()
 );
 
@@ -139,6 +146,22 @@ on conflict (id) do nothing;
 alter table companies add column if not exists maps_enabled boolean not null default false;
 alter table companies add column if not exists maps_location_hint text not null default 'India';
 alter table companies add column if not exists reddit_enabled boolean not null default false;
+alter table companies add column if not exists business_type text not null default 'other';
+alter table companies add column if not exists selected_sources jsonb;
+update companies
+set selected_sources = jsonb_build_array('play', 'appstore')
+    || case when maps_enabled then jsonb_build_array('maps') else '[]'::jsonb end
+    || case when reddit_enabled then jsonb_build_array('reddit') else '[]'::jsonb end
+where selected_sources is null;
+alter table companies alter column selected_sources set default '["play", "appstore"]'::jsonb;
+alter table companies alter column selected_sources set not null;
+alter table companies add column if not exists analysis_goals jsonb not null default '[]'::jsonb;
+alter table companies add column if not exists maps_url text;
+alter table companies add column if not exists instagram_url text;
+alter table companies add column if not exists twitter_url text;
+alter table companies add column if not exists mouthshut_url text;
+alter type review_source add value if not exists 'instagram';
+alter type review_source add value if not exists 'twitter';
 alter table reviews add column if not exists l2_theme text;
 alter table themes add column if not exists l2_subthemes jsonb not null default '[]'::jsonb;
 alter table reviews drop column if exists bucket;

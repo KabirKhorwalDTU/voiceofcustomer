@@ -156,6 +156,323 @@ h3 {
   white-space: nowrap;
 }
 
+.guided-onboarding {
+  display: grid;
+  gap: 16px;
+  max-width: 920px;
+  margin: 26px 0 12px;
+  padding: 18px;
+  background: #ffffff;
+  border: 1px solid #bcc9c6;
+  border-radius: 8px;
+  box-shadow: 0 12px 36px rgba(16, 32, 29, 0.08);
+}
+
+.guided-onboarding-compact {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+}
+
+.onboarding-progress {
+  display: flex;
+  align-items: center;
+  width: 132px;
+  gap: 8px;
+}
+
+.onboarding-progress span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 25px;
+  height: 25px;
+  color: #6b7775;
+  background: #edf3f1;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.onboarding-progress span.active,
+.onboarding-progress span.done {
+  color: #ffffff;
+  background: #00685f;
+}
+
+.onboarding-progress i {
+  flex: 1;
+  height: 2px;
+  background: #d6e2df;
+}
+
+.onboarding-form {
+  display: grid;
+  gap: 16px;
+}
+
+.onboarding-heading h2 {
+  margin: 6px 0;
+  color: #10201d;
+  font-size: 22px;
+}
+
+.onboarding-heading p,
+.identity-followups small,
+.business-match-row small,
+.onboarding-actions small {
+  margin: 0;
+  color: #667572;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #00685f;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.onboarding-fields {
+  display: grid;
+  gap: 12px;
+}
+
+.onboarding-fields.two-up {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.onboarding-form label {
+  display: grid;
+  gap: 6px;
+  color: #223b37;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.onboarding-form label small {
+  color: #788683;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.onboarding-form input {
+  width: 100%;
+  min-height: 43px;
+  padding: 0 11px;
+  color: #152521;
+  background: #ffffff;
+  border: 1px solid #bdcac6;
+  border-radius: 6px;
+  outline: none;
+}
+
+.onboarding-form input:focus {
+  border-color: #00685f;
+  box-shadow: 0 0 0 3px rgba(0, 104, 95, 0.12);
+}
+
+.choice-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.choice-fieldset legend {
+  margin-bottom: 8px;
+  color: #223b37;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.choice-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.choice-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 35px;
+  gap: 5px;
+  padding: 7px 10px;
+  color: #36514b;
+  background: #f5f9f7;
+  border: 1px solid #d6e2df;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: left;
+}
+
+.choice-chip.selected {
+  color: #064d47;
+  background: #e2f2ee;
+  border-color: #00685f;
+}
+
+.onboarding-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.onboarding-actions.split-actions {
+  justify-content: space-between;
+}
+
+.onboarding-actions.split-actions > div {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.business-match-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #e0e9e6;
+}
+
+.business-match-row > div {
+  display: grid;
+  min-width: 0;
+}
+
+.company-monogram {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  color: #ffffff;
+  background: #00685f;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.text-button {
+  margin-left: auto;
+  padding: 6px;
+  color: #00685f;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.compact-heading h2 {
+  font-size: 20px;
+}
+
+.source-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.source-choice {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  column-gap: 8px;
+  align-items: start;
+  min-width: 0;
+  min-height: 92px;
+  padding: 11px;
+  color: #304943;
+  background: #ffffff;
+  border: 1px solid #d2dfdb;
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.source-choice.selected {
+  background: #f0f8f5;
+  border-color: #00776c;
+}
+
+.source-choice-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  color: #ffffff;
+  border: 1px solid #a6bbb5;
+  border-radius: 5px;
+}
+
+.source-choice.selected .source-choice-marker {
+  background: #00685f;
+  border-color: #00685f;
+}
+
+.source-choice > span:nth-child(2) {
+  display: grid;
+  gap: 4px;
+}
+
+.source-choice strong {
+  color: #17352f;
+  font-size: 13px;
+}
+
+.source-choice small {
+  color: #687875;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.source-choice em {
+  grid-column: 2;
+  margin-top: 7px;
+  color: #58736c;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.identity-followups {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  background: #f7faf9;
+  border: 1px solid #dce7e3;
+  border-radius: 7px;
+}
+
+.followup-heading {
+  display: flex;
+  gap: 8px;
+  color: #00685f;
+}
+
+.followup-heading > div {
+  display: grid;
+  gap: 2px;
+  color: #27443e;
+}
+
+.onboarding-error {
+  margin: 0;
+}
+
 .public-source-toggle {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -1350,6 +1667,10 @@ th {
     grid-template-columns: 1fr 1fr;
   }
 
+  .source-choice-grid {
+    grid-template-columns: 1fr;
+  }
+
   .public-analysis-form .primary-button {
     grid-column: 1 / -1;
   }
@@ -1406,6 +1727,26 @@ th {
   .workspace-grid,
   .workspace-active-row {
     grid-template-columns: 1fr;
+  }
+
+  .onboarding-fields.two-up {
+    grid-template-columns: 1fr;
+  }
+
+  .guided-onboarding {
+    padding: 14px;
+  }
+
+  .onboarding-actions,
+  .onboarding-actions.split-actions,
+  .onboarding-actions.split-actions > div {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .onboarding-actions .primary-button,
+  .onboarding-actions .secondary-button {
+    justify-content: center;
   }
 
   .landing-nav,

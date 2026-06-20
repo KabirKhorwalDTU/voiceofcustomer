@@ -1,35 +1,18 @@
 import { FormEvent, ReactNode, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowRight, BarChart3, CheckCircle2, LockKeyhole, MapPin, MessageSquareText, Search, Store, Users } from "lucide-react";
+import { BarChart3, CheckCircle2, LockKeyhole, MapPin, MessageSquareText, Search, Store, Users } from "lucide-react";
 import { api, getAuthUser, AuthUser } from "../lib/api";
+import { OnboardingFlow } from "../components/OnboardingFlow";
 
-const SOURCES = ["Play Store", "App Store", "Google Maps reviews", "Reddit", "MouthShut"];
+const SOURCES = ["Google Play", "App Store", "Google Maps", "Instagram", "X / Twitter", "Reddit", "MouthShut"];
 
 export function LandingPage() {
   const navigate = useNavigate();
-  const [name, setName] = useState("");
-  const [website, setWebsite] = useState("");
-  const [redditEnabled, setRedditEnabled] = useState(false);
   const [email, setEmail] = useState("");
   const [user, setUser] = useState<AuthUser | null>(() => getAuthUser());
   const [authOpen, setAuthOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-
-  async function startAnalysis(event: FormEvent) {
-    event.preventDefault();
-    if (!name.trim() || !website.trim()) return;
-    setBusy(true);
-    setError("");
-    try {
-      const response = await api.submitPublicRun({ name, website, reddit_enabled: redditEnabled });
-      navigate(`/app/runs/${response.run.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not start analysis");
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function signIn(event: FormEvent) {
     event.preventDefault();
@@ -73,29 +56,11 @@ export function LandingPage() {
 
       <section className="hero-grid">
         <div className="hero-copy">
-          <h1>Hear what customers are already saying about a consumer app.</h1>
+          <h1>Hear what customers are already saying about your business.</h1>
           <p>
-            Enter a company and website. VOC Analyst resolves public review surfaces, pulls low-rated feedback, and turns raw complaints into L1/L2 issue maps, quotes, and deck-ready insights.
+            Start with a name. VOC Analyst finds the relevant public places, listens for customer feedback, and turns it into a clear L1/L2 issue map with the raw voices behind it.
           </p>
-          <form className="public-analysis-form" onSubmit={startAnalysis}>
-            <label>
-              Company name
-              <input value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g., FirstClub" required />
-            </label>
-            <label>
-              Company website
-              <input value={website} onChange={(event) => setWebsite(event.target.value)} placeholder="https://firstclub.com" required />
-            </label>
-            <label className="public-source-toggle">
-              <input type="checkbox" checked={redditEnabled} onChange={(event) => setRedditEnabled(event.target.checked)} />
-              <span>Include Reddit mentions</span>
-              <small>Optional context. Keep it off for broad or ambiguous brand names.</small>
-            </label>
-            <button className="primary-button" disabled={busy}>
-              Start analysis
-              <ArrowRight size={17} />
-            </button>
-          </form>
+          <OnboardingFlow onStarted={(runId) => navigate(`/app/runs/${runId}`)} />
           {error ? <p className="error landing-error">{error}</p> : null}
           <div className="source-strip" aria-label="Supported sources">
             {SOURCES.map((source) => <span key={source}>{source}</span>)}

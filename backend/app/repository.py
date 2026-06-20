@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.auth import Actor
 from app.models import Company, Review, Run, RunLog, Settings, Theme
-from app.pipeline.resolver import resolve_links
+from app.onboarding import normalize_business_type, normalize_sources, selected_sources_for_company
+from app.pipeline.resolver import ResolvedLinks, resolve_links
 from app.schemas import SubmitRunRequest
 
 
@@ -55,7 +56,7 @@ def can_access_run(run: Run, actor: Optional[Actor]) -> bool:
     return False
 
 
-def create_or_get_company(session: Session, request: SubmitRunRequest, actor: Optional[Actor] = None) -> Company:
+def find_matching_company(session: Session, request: SubmitRunRequest, actor: Optional[Actor] = None) -> Tuple[ResolvedLinks, Optional[Company]]:
     resolved = resolve_links(request.play_link, request.app_store_link, request.website, request.name)
     clauses = []
     if resolved.play_id:
@@ -63,9 +64,33 @@ def create_or_get_company(session: Session, request: SubmitRunRequest, actor: Op
     if resolved.app_id:
         clauses.append(Company.app_id == resolved.app_id)
     if resolved.domain:
-        clauses.append(and_(Company.domain == resolved.domain, Company.name == request.name))
+        clauses.append(and_(Company.domain == resolved.domain, Company.name == request.name.strip()))
     filters = actor_filters(Company, actor)
     company = session.execute(select(Company).where(or_(*clauses), *filters)).scalars().first() if clauses else None
+    return resolved, company
+
+
+def create_or_get_company(
+    session: Session,
+    request: SubmitRunRequest,
+    actor: Optional[Actor] = None,
+    resolved: Optional[ResolvedLinks] = None,
+    existing_company: Optional[Company] = None,
+) -> Company:
+    if resolved is None:
+        resolved, existing_company = find_matching_company(session, request, actor)
+    business_type = normalize_business_type(request.business_type)
+    requested_sources = list(request.selected_sources)
+    # Keep older API clients functional while the public UI moves to source chips.
+    if not requested_sources:
+        if request.maps_enabled:
+            requested_sources.append("maps")
+        if request.reddit_enabled:
+            requested_sources.append("reddit")
+    selected_sources = normalize_sources(requested_sources, business_type)
+    maps_enabled = "maps" in selected_sources
+    reddit_enabled = "reddit" in selected_sources
+    company = existing_company
     if company is None:
         company = Company(
             owner_user_id=actor.user_id if actor and actor.user_id else None,
@@ -75,9 +100,16 @@ def create_or_get_company(session: Session, request: SubmitRunRequest, actor: Op
             app_id=resolved.app_id or None,
             domain=resolved.domain or None,
             brand_keyword=resolved.brand_keyword,
-            maps_enabled=request.maps_enabled,
+            maps_enabled=maps_enabled,
             maps_location_hint=request.maps_location_hint.strip() or "India",
-            reddit_enabled=request.reddit_enabled,
+            reddit_enabled=reddit_enabled,
+            business_type=business_type,
+            selected_sources=selected_sources,
+            analysis_goals=list(dict.fromkeys(request.analysis_goals))[:8],
+            maps_url=request.maps_url.strip() or None,
+            instagram_url=request.instagram_url.strip() or None,
+            twitter_url=request.twitter_url.strip() or None,
+            mouthshut_url=request.mouthshut_url.strip() or None,
         )
         session.add(company)
         session.flush()
@@ -87,20 +119,29 @@ def create_or_get_company(session: Session, request: SubmitRunRequest, actor: Op
         company.app_id = company.app_id or resolved.app_id or None
         company.domain = company.domain or resolved.domain or None
         company.brand_keyword = resolved.brand_keyword or company.brand_keyword
-        company.maps_enabled = request.maps_enabled
+        company.maps_enabled = maps_enabled
         company.maps_location_hint = request.maps_location_hint.strip() or company.maps_location_hint or "India"
-        company.reddit_enabled = request.reddit_enabled
+        company.reddit_enabled = reddit_enabled
+        company.business_type = business_type
+        company.selected_sources = selected_sources
+        company.analysis_goals = list(dict.fromkeys(request.analysis_goals))[:8]
+        company.maps_url = request.maps_url.strip() or None
+        company.instagram_url = request.instagram_url.strip() or None
+        company.twitter_url = request.twitter_url.strip() or None
+        company.mouthshut_url = request.mouthshut_url.strip() or None
     return company
 
 
 def create_run(session: Session, request: SubmitRunRequest, actor: Optional[Actor] = None) -> Tuple[Run, bool]:
-    company = create_or_get_company(session, request, actor)
-    active = session.execute(
-        select(Run)
-        .where(Run.company_id == company.id, Run.status.in_(ACTIVE_STATUSES), *actor_filters(Run, actor))
-        .options(joinedload(Run.company))
-        .order_by(desc(Run.created_at))
-    ).scalars().first()
+    resolved, existing_company = find_matching_company(session, request, actor)
+    active = None
+    if existing_company is not None:
+        active = session.execute(
+            select(Run)
+            .where(Run.company_id == existing_company.id, Run.status.in_(ACTIVE_STATUSES), *actor_filters(Run, actor))
+            .options(joinedload(Run.company))
+            .order_by(desc(Run.created_at))
+        ).scalars().first()
     if active:
         log_run_event(
             session,
@@ -111,6 +152,7 @@ def create_run(session: Session, request: SubmitRunRequest, actor: Optional[Acto
             details={"reason": "company already has an active run"},
         )
         return active, True
+    company = create_or_get_company(session, request, actor, resolved=resolved, existing_company=existing_company)
     settings = get_settings(session)
     run = Run(
         company_id=company.id,
@@ -137,6 +179,13 @@ def create_run(session: Session, request: SubmitRunRequest, actor: Optional[Acto
             "maps_enabled": company.maps_enabled,
             "maps_location_hint": company.maps_location_hint,
             "reddit_enabled": company.reddit_enabled,
+            "business_type": company.business_type,
+            "selected_sources": selected_sources_for_company(company),
+            "analysis_goals": company.analysis_goals or [],
+            "maps_url_supplied": bool(company.maps_url),
+            "instagram_url_supplied": bool(company.instagram_url),
+            "twitter_url_supplied": bool(company.twitter_url),
+            "mouthshut_url_supplied": bool(company.mouthshut_url),
         },
     )
     return run, False
@@ -190,6 +239,9 @@ def rerun_company_from_run(session: Session, run_id: str, actor: Optional[Actor]
             "maps_enabled": company.maps_enabled,
             "maps_location_hint": company.maps_location_hint,
             "reddit_enabled": company.reddit_enabled,
+            "business_type": company.business_type,
+            "selected_sources": selected_sources_for_company(company),
+            "analysis_goals": company.analysis_goals or [],
         },
     )
     return run, False

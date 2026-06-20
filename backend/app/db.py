@@ -45,6 +45,26 @@ def ensure_lightweight_migrations() -> None:
             connection.execute(text("alter table companies add column if not exists maps_enabled boolean not null default false"))
             connection.execute(text("alter table companies add column if not exists maps_location_hint text not null default 'India'"))
             connection.execute(text("alter table companies add column if not exists reddit_enabled boolean not null default false"))
+            connection.execute(text("alter table companies add column if not exists business_type text not null default 'other'"))
+            connection.execute(text("alter table companies add column if not exists selected_sources jsonb"))
+            connection.execute(
+                text(
+                    """
+                    update companies
+                    set selected_sources = jsonb_build_array('play', 'appstore')
+                        || case when maps_enabled then jsonb_build_array('maps') else '[]'::jsonb end
+                        || case when reddit_enabled then jsonb_build_array('reddit') else '[]'::jsonb end
+                    where selected_sources is null
+                    """
+                )
+            )
+            connection.execute(text("alter table companies alter column selected_sources set default '[\"play\", \"appstore\"]'::jsonb"))
+            connection.execute(text("alter table companies alter column selected_sources set not null"))
+            connection.execute(text("alter table companies add column if not exists analysis_goals jsonb not null default '[]'::jsonb"))
+            connection.execute(text("alter table companies add column if not exists maps_url text"))
+            connection.execute(text("alter table companies add column if not exists instagram_url text"))
+            connection.execute(text("alter table companies add column if not exists twitter_url text"))
+            connection.execute(text("alter table companies add column if not exists mouthshut_url text"))
             connection.execute(text("alter table companies add column if not exists owner_user_id uuid"))
             connection.execute(text("alter table companies add column if not exists guest_id text"))
             connection.execute(text("create index if not exists companies_owner_user_id_idx on companies(owner_user_id)"))
@@ -85,6 +105,8 @@ def ensure_lightweight_migrations() -> None:
             connection.execute(text("create index if not exists reviews_l2_theme_idx on reviews(l2_theme)"))
             connection.execute(text("alter table themes add column if not exists l2_subthemes jsonb not null default '[]'::jsonb"))
             connection.execute(text("alter table settings alter column max_reviews set default 5000"))
+            connection.execute(text("alter type review_source add value if not exists 'instagram'"))
+            connection.execute(text("alter type review_source add value if not exists 'twitter'"))
             connection.execute(
                 text(
                     """
@@ -110,6 +132,33 @@ def ensure_lightweight_migrations() -> None:
                 connection.execute(text("alter table companies add column maps_location_hint varchar not null default 'India'"))
             if "reddit_enabled" not in columns:
                 connection.execute(text("alter table companies add column reddit_enabled boolean not null default 0"))
+            if "business_type" not in columns:
+                connection.execute(text("alter table companies add column business_type varchar not null default 'other'"))
+            if "selected_sources" not in columns:
+                connection.execute(text("alter table companies add column selected_sources json"))
+                connection.execute(
+                    text(
+                        """
+                        update companies
+                        set selected_sources = case
+                            when maps_enabled = 1 and reddit_enabled = 1 then '["play", "appstore", "maps", "reddit"]'
+                            when maps_enabled = 1 then '["play", "appstore", "maps"]'
+                            when reddit_enabled = 1 then '["play", "appstore", "reddit"]'
+                            else '["play", "appstore"]'
+                        end
+                        """
+                    )
+                )
+            if "analysis_goals" not in columns:
+                connection.execute(text("alter table companies add column analysis_goals json not null default '[]'"))
+            if "maps_url" not in columns:
+                connection.execute(text("alter table companies add column maps_url varchar"))
+            if "instagram_url" not in columns:
+                connection.execute(text("alter table companies add column instagram_url varchar"))
+            if "twitter_url" not in columns:
+                connection.execute(text("alter table companies add column twitter_url varchar"))
+            if "mouthshut_url" not in columns:
+                connection.execute(text("alter table companies add column mouthshut_url varchar"))
             if "owner_user_id" not in columns:
                 connection.execute(text("alter table companies add column owner_user_id varchar"))
             if "guest_id" not in columns:

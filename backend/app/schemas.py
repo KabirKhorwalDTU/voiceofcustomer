@@ -31,9 +31,34 @@ class SubmitRunRequest(BaseModel):
     play_link: str = ""
     app_store_link: str = ""
     website: str = ""
+    business_type: str = "other"
+    selected_sources: List[str] = Field(default_factory=list)
+    analysis_goals: List[str] = Field(default_factory=list)
     maps_enabled: bool = False
     maps_location_hint: str = "India"
     reddit_enabled: bool = False
+    maps_url: str = ""
+    instagram_url: str = ""
+    twitter_url: str = ""
+    mouthshut_url: str = ""
+
+
+class CompanyDiscoveryRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    website: str = ""
+    business_type: str = "other"
+
+
+class CompanyDiscoveryOut(BaseModel):
+    name: str
+    domain: str = ""
+    brand_keyword: str
+    play_id: str = ""
+    app_id: str = ""
+    icon_text: str
+    business_type: str
+    recommended_sources: List[str]
+    source_catalog: List[Dict[str, Any]]
 
 
 class CompanyOut(BaseModel):
@@ -46,6 +71,13 @@ class CompanyOut(BaseModel):
     maps_enabled: bool = False
     maps_location_hint: str = "India"
     reddit_enabled: bool = False
+    business_type: str = "other"
+    selected_sources: List[str] = Field(default_factory=list)
+    analysis_goals: List[str] = Field(default_factory=list)
+    maps_url: Optional[str] = None
+    instagram_url: Optional[str] = None
+    twitter_url: Optional[str] = None
+    mouthshut_url: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

@@ -3,8 +3,8 @@ from datetime import date
 from typing import Dict, List, Optional
 
 
-SOURCES = ("play", "appstore", "reddit", "maps", "mouthshut")
-DEFAULT_SOURCES = ("play", "appstore", "reddit", "maps")
+SOURCES = ("play", "appstore", "maps", "instagram", "twitter", "reddit", "mouthshut")
+DEFAULT_SOURCES = ("play", "appstore")
 MAX_L1_THEMES = 20
 MAX_L2_THEMES = 10
 

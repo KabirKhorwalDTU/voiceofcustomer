@@ -20,6 +20,13 @@ export type Company = {
   maps_enabled: boolean;
   maps_location_hint: string;
   reddit_enabled: boolean;
+  business_type: string;
+  selected_sources: string[];
+  analysis_goals: string[];
+  maps_url?: string | null;
+  instagram_url?: string | null;
+  twitter_url?: string | null;
+  mouthshut_url?: string | null;
   created_at: string;
 };
 
@@ -122,6 +129,41 @@ export type Settings = {
   source_weights: Record<string, number>;
 };
 
+export type SourceOption = {
+  id: string;
+  label: string;
+  short_description: string;
+  identity_field: string;
+  cap: number;
+};
+
+export type CompanyDiscovery = {
+  name: string;
+  domain: string;
+  brand_keyword: string;
+  play_id: string;
+  app_id: string;
+  icon_text: string;
+  business_type: string;
+  recommended_sources: string[];
+  source_catalog: SourceOption[];
+};
+
+export type SubmitRunPayload = {
+  name: string;
+  website?: string;
+  play_link?: string;
+  app_store_link?: string;
+  business_type?: string;
+  selected_sources?: string[];
+  analysis_goals?: string[];
+  maps_location_hint?: string;
+  maps_url?: string;
+  instagram_url?: string;
+  twitter_url?: string;
+  mouthshut_url?: string;
+};
+
 function makeGuestId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -207,7 +249,13 @@ export const api = {
   logout() {
     clearAuth();
   },
-  submitRun(payload: { name: string; play_link?: string; app_store_link?: string; website?: string; maps_enabled?: boolean; maps_location_hint?: string; reddit_enabled?: boolean }) {
+  discoverCompany(payload: { name: string; website?: string; business_type?: string }) {
+    return request<CompanyDiscovery>("/api/onboarding/discover", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  submitRun(payload: SubmitRunPayload) {
     return request<{ run: Run; deduped_existing: boolean }>("/api/runs", {
       method: "POST",
       body: JSON.stringify({
@@ -215,21 +263,6 @@ export const api = {
         app_store_link: "",
         website: "",
         maps_location_hint: "India",
-        maps_enabled: false,
-        reddit_enabled: false,
-        ...payload,
-      }),
-    });
-  },
-  submitPublicRun(payload: { name: string; website: string; reddit_enabled?: boolean }) {
-    return request<{ run: Run; deduped_existing: boolean }>("/api/runs", {
-      method: "POST",
-      body: JSON.stringify({
-        play_link: "",
-        app_store_link: "",
-        maps_enabled: true,
-        maps_location_hint: "India",
-        reddit_enabled: false,
         ...payload,
       }),
     });

@@ -4,11 +4,12 @@ import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
 from app.config import AppConfig
+from app.onboarding import selected_sources_for_company
 from app.pipeline.types import RawReview, SOURCES
 
 
@@ -17,7 +18,9 @@ ACTORS: Dict[str, Dict[str, str]] = {
     "appstore": {"id": "thewolves/appstore-reviews-scraper", "version": "resolve-with-apify-token"},
     "reddit": {"id": "harshmaur/reddit-scraper", "version": "resolve-with-apify-token"},
     "maps": {"id": "compass/google-maps-reviews-scraper", "version": "resolve-with-apify-token"},
-    "mouthshut": {"id": "getdataforme/mouthshut-reviews-scraper", "version": "disabled-by-default"},
+    "mouthshut": {"id": "gu0W1F5fuEOf2WR5y", "version": "resolve-with-apify-token"},
+    "instagram": {"id": "shu8hvrXbJbY3Eb9W", "version": "resolve-with-apify-token"},
+    "twitter": {"id": "61RPP7dywgiy0JPD0", "version": "resolve-with-apify-token"},
 }
 
 ENABLE_PAID_STORE_FALLBACK = False
@@ -27,6 +30,8 @@ APIFY_EVENT_PRICING: Dict[str, Dict[str, float]] = {
     "reddit": {"actor_start": 0.02, "per_result": 0.00200},
     "maps": {"actor_start": 0.00005, "per_result": 0.00060},
     "mouthshut": {"actor_start": 0.0, "per_result": 0.0},
+    "instagram": {"actor_start": 0.0, "per_result": 0.0027},
+    "twitter": {"actor_start": 0.0, "per_result": 0.0004},
 }
 SECRET_PATTERNS = (
     re.compile(r"token=([^&\\s'\\\"]+)"),
@@ -43,12 +48,10 @@ class BudgetExceeded(Exception):
 def source_cap(source: str, max_reviews: int) -> int:
     if source == "maps":
         return 100
-    if source == "reddit":
+    if source in {"reddit", "instagram", "twitter", "mouthshut"}:
         return min(max_reviews, 100)
     if source == "appstore":
         return min(max_reviews, 500)
-    if source == "mouthshut":
-        return 0
     return max_reviews
 
 
@@ -114,10 +117,10 @@ def normalize_item(source: str, item: Dict[str, Any]) -> Optional[RawReview]:
         body = str(_field(item, ["body", "content", "text"]) or "").strip()
         text = "\n".join(part for part in [title, body] if part)
     else:
-        text = _field(item, ["text", "review", "content", "body", "comment", "title"])
+        text = _field(item, ["text", "review", "content", "body", "comment", "commentText", "fullText", "full_text", "caption", "title"])
     if not text:
         return None
-    if source == "reddit":
+    if source in {"reddit", "instagram", "twitter"}:
         rating_int = None
     else:
         rating = _field(item, ["rating", "score", "stars"])
@@ -128,7 +131,7 @@ def normalize_item(source: str, item: Dict[str, Any]) -> Optional[RawReview]:
     return RawReview(
         source=source,
         text=str(text),
-        date=_parse_date(_field(item, ["date", "publishedAt", "createdAt", "at", "timestamp"])),
+        date=_parse_date(_field(item, ["date", "publishedAt", "createdAt", "timestamp", "takenAtTimestamp", "time"])),
         rating=rating_int,
         external_id=str(_field(item, ["id", "reviewId", "url", "permalink"]) or ""),
     )
@@ -177,23 +180,76 @@ def build_actor_input(source: str, company: Any, max_reviews: int, place_ids: Op
             return {"placeIds": place_ids, "maxReviews": cap, "reviewsSort": "lowestRanking", "language": "en", "reviewsOrigin": "google"}
         return {"searchStringsArray": [f"{company.brand_keyword} India"], "maxReviews": cap, "reviewsSort": "lowestRanking", "language": "en", "reviewsOrigin": "google"}
     if source == "mouthshut":
-        return {"query": company.brand_keyword, "maxItems": cap}
+        return {"urls": [company.mouthshut_url], "item_limit": cap, "proxyConfiguration": {"useApifyProxy": False}}
     return {}
 
 
-async def run_actor(source: str, company: Any, max_reviews: int, config: AppConfig, place_ids: Optional[List[str]] = None) -> List[RawReview]:
+async def run_actor_payload(source: str, payload: Dict[str, Any], config: AppConfig) -> List[RawReview]:
     actor_id = ACTORS[source]["id"].replace("/", "~")
     run_url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items"
     params = {"timeout": 180, "memory": 512 if source == "reddit" else 1024}
     headers = {"Authorization": f"Bearer {config.apify_token}"}
-    payload = build_actor_input(source, company, max_reviews, place_ids)
     async with httpx.AsyncClient(timeout=240) as client:
         response = await client.post(run_url, params=params, headers=headers, json=payload)
         if response.is_error:
             raise RuntimeError(format_response_error(response))
         items = response.json()
     normalized = [review for item in items if (review := normalize_item(source, item))]
-    return normalized[: source_cap(source, max_reviews)]
+    return normalized
+
+
+async def run_actor(source: str, company: Any, max_reviews: int, config: AppConfig, place_ids: Optional[List[str]] = None) -> List[RawReview]:
+    payload = build_actor_input(source, company, max_reviews, place_ids)
+    items = await run_actor_payload(source, payload, config)
+    return items[: source_cap(source, max_reviews)]
+
+
+def _social_handle(value: str) -> str:
+    parsed = urlparse(value if "://" in value else f"https://x.com/{value}")
+    path = parsed.path.strip("/").split("/")[0]
+    return path.lstrip("@").strip()
+
+
+def _instagram_post_urls(value: str) -> List[str]:
+    urls = [part.strip() for part in re.split(r"[\s,]+", value or "") if part.strip()]
+    return [url for url in urls if re.search(r"instagram\.com/(p|reel)/", url, flags=re.IGNORECASE)][:2]
+
+
+async def run_social_source(source: str, company: Any, max_reviews: int, config: AppConfig) -> Tuple[List[RawReview], List[Dict[str, Any]]]:
+    cap = source_cap(source, max_reviews)
+    payloads: List[Tuple[str, Dict[str, Any]]] = []
+    if source == "instagram":
+        post_urls = _instagram_post_urls(getattr(company, "instagram_url", "") or "")
+        if post_urls:
+            payloads.append(("brand_post_comments", {"resultsType": "comments", "directUrls": post_urls, "resultsLimit": 50}))
+        hashtag = re.sub(r"[^A-Za-z0-9_]", "", str(company.brand_keyword or company.name))
+        if hashtag:
+            payloads.append(("public_hashtag_mentions", {"resultsType": "posts", "search": f"#{hashtag}", "searchType": "hashtag", "searchLimit": 1, "resultsLimit": 50, "addParentData": True}))
+    elif source == "twitter":
+        handle = _social_handle(getattr(company, "twitter_url", "") or "")
+        if handle:
+            payloads.append(("brand_account_replies", {"inReplyTo": handle, "maxItems": 50, "sort": "Latest"}))
+        search_term = f'"{company.name}"'
+        if handle:
+            search_term = f"{search_term} -from:{handle}"
+        payloads.append(("public_keyword_mentions", {"searchTerms": [search_term], "maxItems": 50 if handle else cap, "sort": "Latest", "includeSearchTerms": True}))
+
+    combined: List[RawReview] = []
+    details: List[Dict[str, Any]] = []
+    for label, payload in payloads:
+        try:
+            rows = await run_actor_payload(source, payload, config)
+            combined.extend(rows)
+            details.append({"kind": label, "status": "ok", "count": len(rows)})
+        except Exception as exc:
+            details.append({"kind": label, "status": "failed", "error": redact_error(exc)})
+    if not any(detail["status"] == "ok" for detail in details):
+        raise RuntimeError("; ".join(str(detail.get("error") or "social actor failed") for detail in details) or "No social query could be started.")
+    unique: Dict[str, RawReview] = {}
+    for item in combined:
+        key = item.external_id or f"{item.date}|{item.text.strip().lower()}"
+        unique.setdefault(key, item)
+    return list(unique.values())[:cap], details
 
 
 async def run_oss_store_scraper(source: str, company: Any, max_reviews: int) -> List[RawReview]:
@@ -247,9 +303,26 @@ def place_matches_company(place: Dict[str, Any], company: Any) -> bool:
     return False
 
 
+def place_id_from_maps_url(value: str) -> str:
+    """Use an explicit query_place_id when a business owner provides one."""
+    if not value:
+        return ""
+    parsed = urlparse(value)
+    query = parse_qs(parsed.query)
+    for key in ("query_place_id", "place_id"):
+        candidate = (query.get(key) or [""])[0].strip()
+        if candidate:
+            return candidate
+    match = re.search(r"(?:query_place_id|place_id)=(ChI[A-Za-z0-9_-]+)", value)
+    return match.group(1) if match else ""
+
+
 async def discover_places(company: Any, config: AppConfig) -> Tuple[List[str], List[Dict[str, Any]], List[str]]:
     if not config.google_maps_api_key:
         raise RuntimeError("GOOGLE_MAPS_API_KEY is not configured.")
+    supplied_place_id = place_id_from_maps_url(str(getattr(company, "maps_url", "") or ""))
+    if supplied_place_id:
+        return [supplied_place_id], [{"id": supplied_place_id, "source": "provided_maps_url"}], ["provided_maps_url_place_id"]
     location_hint = company.maps_location_hint or "India"
     if "india" not in location_hint.lower():
         location_hint = f"{location_hint} India"
@@ -306,12 +379,10 @@ def dev_reviews(company: Any, max_reviews: int) -> List[RawReview]:
 
 
 def disabled_source_reason(source: str, company: Any) -> Optional[str]:
-    if source == "mouthshut":
-        return "disabled_by_default"
-    if source == "maps" and not company.maps_enabled:
-        return "maps_opt_in_false"
-    if source == "reddit" and not getattr(company, "reddit_enabled", False):
-        return "reddit_opt_in_false"
+    if source not in set(selected_sources_for_company(company)):
+        return "not_selected"
+    if source == "mouthshut" and not getattr(company, "mouthshut_url", None):
+        return "mouthshut_review_url_required"
     return None
 
 
@@ -404,10 +475,14 @@ async def scrape_sources(company: Any, settings: Any, config: AppConfig, current
         attempt_details: List[Dict[str, Any]] = []
         for attempt in range(1, 4):
             try:
-                items = await run_actor(source, company, settings.max_reviews, config, place_ids=place_ids)
+                social_details: List[Dict[str, Any]] = []
+                if source in {"instagram", "twitter"}:
+                    items, social_details = await run_social_source(source, company, settings.max_reviews, config)
+                else:
+                    items = await run_actor(source, company, settings.max_reviews, config, place_ids=place_ids)
                 cost_usd = estimate_cost(source, len(items))
                 attempt_details.append({"attempt": attempt, "status": "ok", "provider": "apify", "count": len(items), "cost_usd": cost_usd})
-                status = {"status": "ok", "provider": "apify", "actor": ACTORS[source], "attempts": attempt, "count": len(items), "cost_usd": cost_usd, "attempt_details": attempt_details, "places": places, "placeQueries": place_queries}
+                status = {"status": "ok", "provider": "apify", "actor": ACTORS[source], "attempts": attempt, "count": len(items), "cost_usd": cost_usd, "attempt_details": attempt_details, "places": places, "placeQueries": place_queries, "social_queries": social_details}
                 if source == "reddit":
                     status["searchTerms"] = [company.brand_keyword]
                 return source, items, status
@@ -423,8 +498,10 @@ async def scrape_sources(company: Any, settings: Any, config: AppConfig, current
     scraper_steps = [
         ("play", scrape_store_with_fallback),
         ("appstore", scrape_store_with_fallback),
-        ("reddit", scrape_apify_source),
         ("maps", scrape_apify_source),
+        ("instagram", scrape_apify_source),
+        ("twitter", scrape_apify_source),
+        ("reddit", scrape_apify_source),
         ("mouthshut", scrape_apify_source),
     ]
     for source_name, scraper in scraper_steps:

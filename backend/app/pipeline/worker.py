@@ -25,7 +25,7 @@ WORKER_LEASE_RENEW_SECONDS = 30
 
 
 def is_analysis_candidate(review: CleanReview) -> bool:
-    if review.source == "reddit":
+    if review.source in {"reddit", "instagram", "twitter"}:
         return True
     return review.rating in {1, 2, 3}
 
@@ -302,6 +302,7 @@ class Worker:
                             "places": status.get("places"),
                             "placeQueries": status.get("placeQueries"),
                             "searchTerms": status.get("searchTerms"),
+                            "social_queries": status.get("social_queries"),
                         },
                     )
                 log_run_event(
@@ -337,7 +338,7 @@ class Worker:
                         "cleaned_before_rating_filter": len(cleaned_all),
                         "cleaned_reviews": len(cleaned),
                         "selected_reviews": len(cleaned),
-                        "selection_rule": "rating_1_2_3_for_rated_sources_plus_reddit_when_enabled",
+                        "selection_rule": "rating_1_2_3_for_rated_review_sources_plus_selected_social_mentions",
                         "raw_source_counts": source_counts,
                         "selected_source_counts": selected_source_counts,
                         "dedup_ratio": dedup_ratio,
