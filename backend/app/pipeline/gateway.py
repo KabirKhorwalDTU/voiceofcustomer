@@ -446,17 +446,37 @@ class LLMGateway:
                     raise RuntimeError(_format_response_error(response))
                 transient_errors = 0
                 data = response.json()
+                # The Gemini Batch API has returned both a long-running Operation
+                # (`done` + `response.batch`) and a direct batch resource (`state`
+                # + `output`) across API revisions. Accept either shape so a
+                # completed direct batch cannot be polled forever.
+                metadata = data.get("metadata") or {}
+                batch = data.get("response", {}).get("batch") or metadata.get("batch") or (data if data.get("state") else metadata)
+                state = str(batch.get("state") or "")
+                normalized_state = state.upper()
+                if normalized_state.endswith("SUCCEEDED"):
+                    return self._extract_batch_responses(batch)
+                if normalized_state.endswith(("FAILED", "CANCELLED", "EXPIRED")):
+                    error = batch.get("error") or data.get("error") or {"state": state}
+                    raise RuntimeError(json.dumps(error))
                 if data.get("done"):
                     if data.get("error"):
                         raise RuntimeError(json.dumps(data["error"]))
                     return self._extract_batch_responses(data)
-                batch = data.get("response", {}).get("batch") or data.get("metadata", {}).get("batch") or {}
-                await self._emit_progress("batch_poll", operation=operation_name, state=batch.get("state"), done=False)
+                await self._emit_progress(
+                    "batch_poll",
+                    operation=operation_name,
+                    state=state or None,
+                    batch_stats=batch.get("batchStats") or {},
+                    done=False,
+                )
                 await asyncio.sleep(10)
         raise RuntimeError("Batch operation timed out.")
 
     def _extract_batch_responses(self, operation: Dict[str, Any]) -> List[Dict[str, Any]]:
         candidates = [
+            operation,
+            operation.get("batch", {}),
             operation.get("response", {}),
             operation.get("response", {}).get("batch", {}),
             operation.get("response", {}).get("batch", {}).get("output", {}),
