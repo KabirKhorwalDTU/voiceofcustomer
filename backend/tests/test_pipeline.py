@@ -490,6 +490,62 @@ def test_gemini_batch_poll_retries_transient_503(monkeypatch):
     asyncio.run(run())
 
 
+def test_gemini_batch_poll_records_current_batch_state(monkeypatch):
+    async def run():
+        calls = {"count": 0}
+
+        async def fake_sleep(_delay):
+            return None
+
+        class FakeResponse:
+            status_code = 200
+
+            @property
+            def is_error(self):
+                return False
+
+            def json(self):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    return {
+                        "state": "BATCH_STATE_RUNNING",
+                        "batchStats": {"requestCount": "1", "pendingRequestCount": "1"},
+                    }
+                return {
+                    "state": "BATCH_STATE_SUCCEEDED",
+                    "output": {
+                        "inlinedResponses": [
+                            {"response": {"candidates": [{"content": {"parts": [{"text": "[]"}]}}]}}
+                        ]
+                    },
+                }
+
+        class FakeClient:
+            def __init__(self, timeout=60):
+                self.timeout = timeout
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def get(self, _url, headers=None):
+                return FakeResponse()
+
+        monkeypatch.setattr("app.pipeline.gateway.asyncio.sleep", fake_sleep)
+        monkeypatch.setattr("app.pipeline.gateway.httpx.AsyncClient", FakeClient)
+
+        gateway = LLMGateway(AppConfig(gemini_api_key="test", allow_dev_llm_fallback=False), TestSettings())
+        await gateway._poll_batch("batches/test", timeout_seconds=30)
+
+        progress = next(event for event in gateway.usage.progress_events if event["event"] == "batch_poll")
+        assert progress["state"] == "BATCH_STATE_RUNNING"
+        assert progress["batch_stats"]["pendingRequestCount"] == "1"
+
+    asyncio.run(run())
+
+
 def test_gateway_dev_classifier_handles_hinglish():
     async def run():
         text = "Paise debit ho gaye but payment nahi mila"
