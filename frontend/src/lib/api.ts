@@ -213,14 +213,19 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   if (!API_BASE) {
     throw new Error("API backend is not configured. Set VITE_API_BASE_URL to the deployed FastAPI backend URL and redeploy the frontend.");
   }
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
-      ...(options?.headers || {}),
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(),
+        ...(options?.headers || {}),
+      },
+    });
+  } catch {
+    throw new Error("Could not reach the analysis service. Please try again.");
+  }
   if (!response.ok) {
     const body = await response.text();
     throw new Error(body || response.statusText);

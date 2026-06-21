@@ -67,6 +67,29 @@ def ensure_lightweight_migrations() -> None:
             connection.execute(text("alter table companies add column if not exists mouthshut_url text"))
             connection.execute(text("alter table companies add column if not exists owner_user_id uuid"))
             connection.execute(text("alter table companies add column if not exists guest_id text"))
+            # A public workspace may analyse the same app in separate guest/user
+            # workspaces. The original global store-id indexes made that valid
+            # submission fail with a database unique violation.
+            connection.execute(text("drop index if exists companies_play_id_unique"))
+            connection.execute(text("drop index if exists companies_app_id_unique"))
+            connection.execute(
+                text(
+                    """
+                    create unique index if not exists companies_play_tenant_unique
+                    on companies (coalesce(owner_user_id::text, ''), coalesce(guest_id, ''), play_id)
+                    where play_id is not null and play_id <> ''
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    create unique index if not exists companies_app_tenant_unique
+                    on companies (coalesce(owner_user_id::text, ''), coalesce(guest_id, ''), app_id)
+                    where app_id is not null and app_id <> ''
+                    """
+                )
+            )
             connection.execute(text("create index if not exists companies_owner_user_id_idx on companies(owner_user_id)"))
             connection.execute(text("create index if not exists companies_guest_id_idx on companies(guest_id)"))
             connection.execute(text("alter table runs add column if not exists owner_user_id uuid"))

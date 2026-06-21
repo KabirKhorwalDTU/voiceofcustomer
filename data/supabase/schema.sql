@@ -14,6 +14,8 @@ end $$;
 
 create table if not exists companies (
     id uuid primary key default gen_random_uuid(),
+    owner_user_id uuid,
+    guest_id text,
     name text not null,
     play_id text,
     app_id text,
@@ -32,12 +34,12 @@ create table if not exists companies (
     created_at timestamptz not null default now()
 );
 
-create unique index if not exists companies_play_id_unique
-    on companies (play_id)
+create unique index if not exists companies_play_tenant_unique
+    on companies (coalesce(owner_user_id::text, ''), coalesce(guest_id, ''), play_id)
     where play_id is not null and play_id <> '';
 
-create unique index if not exists companies_app_id_unique
-    on companies (app_id)
+create unique index if not exists companies_app_tenant_unique
+    on companies (coalesce(owner_user_id::text, ''), coalesce(guest_id, ''), app_id)
     where app_id is not null and app_id <> '';
 
 create table if not exists runs (
@@ -146,6 +148,16 @@ on conflict (id) do nothing;
 alter table companies add column if not exists maps_enabled boolean not null default false;
 alter table companies add column if not exists maps_location_hint text not null default 'India';
 alter table companies add column if not exists reddit_enabled boolean not null default false;
+alter table companies add column if not exists owner_user_id uuid;
+alter table companies add column if not exists guest_id text;
+drop index if exists companies_play_id_unique;
+drop index if exists companies_app_id_unique;
+create unique index if not exists companies_play_tenant_unique
+    on companies (coalesce(owner_user_id::text, ''), coalesce(guest_id, ''), play_id)
+    where play_id is not null and play_id <> '';
+create unique index if not exists companies_app_tenant_unique
+    on companies (coalesce(owner_user_id::text, ''), coalesce(guest_id, ''), app_id)
+    where app_id is not null and app_id <> '';
 alter table companies add column if not exists business_type text not null default 'other';
 alter table companies add column if not exists selected_sources jsonb;
 update companies

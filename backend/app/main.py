@@ -3,9 +3,9 @@ import logging
 import math
 from typing import List
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 from app.auth import Actor, clean_guest_id, create_or_get_user, create_user_session, resolve_actor
 from app.config import get_config
@@ -63,6 +63,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+    """Keep unexpected API failures readable to a browser client without leaking internals."""
+    logger.exception("Unhandled API error", exc_info=exc)
+    response = JSONResponse(status_code=500, content={"detail": "The analysis service hit a temporary error. Please try again."})
+    origin = request.headers.get("origin", "")
+    if origin in config.cors_origins:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Vary"] = "Origin"
+    return response
 
 
 @app.on_event("startup")
