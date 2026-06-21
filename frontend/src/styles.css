@@ -933,13 +933,12 @@ textarea:focus {
 
 .insight-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.8fr) minmax(320px, 0.9fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   margin-bottom: 18px;
 }
 
-.insight-card,
-.deck-mini {
+.insight-card {
   min-height: 170px;
   padding: 22px;
   background: #ffffff;
@@ -953,13 +952,11 @@ textarea:focus {
   border-color: #00685f;
 }
 
-.insight-card h2,
-.deck-mini h2 {
+.insight-card h2 {
   margin: 0 0 8px;
 }
 
-.insight-card p,
-.deck-mini p {
+.insight-card p {
   margin: 0;
   max-width: 780px;
   color: #1d2633;
@@ -1601,33 +1598,6 @@ th {
   font-weight: 800;
 }
 
-.deck-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.65fr) minmax(280px, 0.7fr);
-  gap: 18px;
-}
-
-.deck-panel {
-  min-width: 0;
-}
-
-.deck-spec {
-  max-height: 520px;
-  overflow: auto;
-  margin: 0;
-  padding: 14px;
-  color: #f6fbfa;
-  background: #10201d;
-  border-radius: 8px;
-  white-space: pre-wrap;
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.stub-panel {
-  align-self: start;
-}
-
 .error,
 .success {
   font-weight: 800;
@@ -1647,7 +1617,6 @@ th {
   .results-stats,
   .insight-grid,
   .chart-grid,
-  .deck-grid,
   .column-filter-row,
   .hero-grid,
   .landing-band {
@@ -1718,7 +1687,6 @@ th {
   .stats-grid,
   .results-stats,
   .chart-grid,
-  .deck-grid,
   .column-filter-row,
   .modal-body,
   .public-analysis-form,

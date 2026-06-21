@@ -102,7 +102,7 @@ export function LandingPage() {
         <div className="proof-grid">
           <Proof icon={<CheckCircle2 size={18} />} title="Low-rated signal first" text="Prioritizes 1/2/3-star reviews so the output is useful for product fixes, not vanity." />
           <Proof icon={<CheckCircle2 size={18} />} title="Session-aware workspace" text="Try without login, then sign in to claim and save the run history." />
-          <Proof icon={<CheckCircle2 size={18} />} title="Deck-ready output" text="Every company page includes ranked themes, L2 sub-issues, raw quotes, exports, and deck-spec copy." />
+          <Proof icon={<CheckCircle2 size={18} />} title="Evidence-backed insight" text="Every company page includes ranked themes, L2 sub-issues, raw quotes, and downloadable evidence." />
         </div>
       </section>
 

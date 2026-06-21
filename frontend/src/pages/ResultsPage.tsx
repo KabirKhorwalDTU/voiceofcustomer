@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, ChevronDown, ChevronRight, Clipboard, Download, ExternalLink, RotateCcw } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronRight, Download, RotateCcw } from "lucide-react";
 import { ResultsCharts } from "../components/Charts";
 import { StatusBadge } from "../components/StatusBadge";
 import { api, Results, ReviewPage, RunLog } from "../lib/api";
@@ -39,7 +39,6 @@ export function ResultsPage() {
   const [expandedThemes, setExpandedThemes] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
-  const [copied, setCopied] = useState(false);
   const [rerunning, setRerunning] = useState(false);
   const [error, setError] = useState("");
 
@@ -104,11 +103,6 @@ export function ResultsPage() {
   const apifyUsage = useMemo(() => rollupProvider(results, "apify"), [results]);
   const trackedCost = Math.max(results?.run.cost_estimate || 0, geminiUsage.cost + apifyUsage.cost);
   const topTheme = results?.themes?.[0];
-  const deckPreview = useMemo(() => {
-    const lines = (results?.deck_spec || "").split("\n").filter((line) => line.trim() && !line.startsWith("#"));
-    return lines.slice(0, 4).join(" ");
-  }, [results?.deck_spec]);
-
   function updateFilter(key: keyof ReviewFilters, value: string) {
     setPage(1);
     setFilters((current) => ({ ...current, [key]: value }));
@@ -217,22 +211,6 @@ export function ResultsPage() {
               ))}
             </div>
           ) : null}
-        </div>
-        <div className="deck-mini">
-          <div className="section-title-row">
-            <h2>Deck Spec</h2>
-            <button
-              className="secondary-button"
-              onClick={async () => {
-                await navigator.clipboard.writeText(results.deck_spec);
-                setCopied(true);
-              }}
-            >
-              <Clipboard size={15} />
-              {copied ? "Copied" : "Copy"}
-            </button>
-          </div>
-          <p>{deckPreview || "Deck-spec will appear after synthesis."}</p>
         </div>
       </section>
 
@@ -365,35 +343,6 @@ export function ResultsPage() {
         </div>
       </section>
 
-      <section className="deck-grid">
-        <div className="section-block deck-panel">
-          <div className="section-title-row">
-            <div>
-              <h2>Deck Spec</h2>
-              <p>Humanized themes, ready for the post-v1 deck generator.</p>
-            </div>
-            <button
-              className="secondary-button"
-              onClick={async () => {
-                await navigator.clipboard.writeText(results.deck_spec);
-                setCopied(true);
-              }}
-            >
-              <Clipboard size={15} />
-              {copied ? "Copied" : "Copy"}
-            </button>
-          </div>
-          <pre className="deck-spec">{results.deck_spec}</pre>
-        </div>
-        <div className="section-block stub-panel">
-          <h2>Deck API stub</h2>
-          <p>Chronicle / Gamma handoff target is reserved for the next phase.</p>
-          <button className="secondary-button" disabled>
-            <ExternalLink size={15} />
-            Send later
-          </button>
-        </div>
-      </section>
     </main>
   );
 }
