@@ -80,6 +80,7 @@ class Company(Base):
     business_type: Mapped[str] = mapped_column(String, nullable=False, default="other")
     selected_sources: Mapped[List[str]] = mapped_column(JSON, nullable=False, default=lambda: ["play", "appstore"])
     analysis_goals: Mapped[List[str]] = mapped_column(JSON, nullable=False, default=list)
+    analysis_focus: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     maps_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     instagram_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     twitter_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -104,6 +105,7 @@ class Run(Base):
     budget_cap: Mapped[float] = mapped_column(Float, nullable=False, default=1)
     dedup_ratio: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     quarantine_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    insight_summary: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -209,4 +211,14 @@ class UserSession(Base):
     user_id: Mapped[str] = mapped_column(GUID(), ForeignKey("users.id"), nullable=False, index=True)
     token_hash: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LegacyRunAccess(Base):
+    __tablename__ = "legacy_run_access"
+    __table_args__ = (UniqueConstraint("run_id", "user_id", name="legacy_run_access_unique"),)
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=uuid_str)
+    run_id: Mapped[str] = mapped_column(GUID(), ForeignKey("runs.id"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(GUID(), ForeignKey("users.id"), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

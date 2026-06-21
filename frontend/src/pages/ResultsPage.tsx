@@ -1,11 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, ChevronDown, ChevronRight, Download, RotateCcw } from "lucide-react";
+import { Activity, ArrowLeft, ChevronDown, ChevronRight, Download, Printer, Radar, RotateCcw } from "lucide-react";
 import { ResultsCharts } from "../components/Charts";
 import { StatusBadge } from "../components/StatusBadge";
 import { api, Results, ReviewPage, RunLog } from "../lib/api";
 
 const ACTIVE = new Set(["queued", "scraping", "classifying"]);
+const ANALYST_STEPS = [
+  { stage: "scraping", label: "Collect public feedback" },
+  { stage: "cleaning", label: "Clean and select relevant feedback" },
+  { stage: "theme_discovery", label: "Find recurring themes" },
+  { stage: "classification", label: "Classify themes and sub-issues" },
+  { stage: "synthesis", label: "Write your executive readout" },
+];
 
 type ReviewFilters = {
   review_hash: string;
@@ -103,6 +110,11 @@ export function ResultsPage() {
   const apifyUsage = useMemo(() => rollupProvider(results, "apify"), [results]);
   const trackedCost = Math.max(results?.run.cost_estimate || 0, geminiUsage.cost + apifyUsage.cost);
   const topTheme = results?.themes?.[0];
+  const insightSummary = toSummaryRecord(results?.summary?.insight_summary);
+  const feedbackRisk = toSummaryRecord(results?.summary?.feedback_risk);
+  const feedbackRiskScore = Number(feedbackRisk.score || 0);
+  const recommendedActions = Array.isArray(insightSummary.recommended_actions) ? insightSummary.recommended_actions as Array<Record<string, unknown>> : [];
+  const firstAction = recommendedActions[0] || {};
   function updateFilter(key: keyof ReviewFilters, value: string) {
     setPage(1);
     setFilters((current) => ({ ...current, [key]: value }));
@@ -151,25 +163,86 @@ export function ResultsPage() {
     return <main className="app-shell"><div className="empty-slab">Loading run...</div></main>;
   }
 
+  if (ACTIVE.has(results.run.status)) {
+    const liveStepIndex = ANALYST_STEPS.findIndex((step) => results.run.current_stage.toLowerCase().includes(step.stage.replace("_", " ")) || results.run.stage_detail.toLowerCase().includes(step.stage.replace("_", " ")));
+    const currentIndex = liveStepIndex >= 0 ? liveStepIndex : Math.min(ANALYST_STEPS.length - 1, Math.floor((results.run.progress || 0) * ANALYST_STEPS.length));
+    return (
+      <main className="app-shell analyst-page">
+        <header className="editorial-app-header report-header">
+          <Link to="/" className="brand-lockup"><span>VOC</span>Voice of Customer</Link>
+          <div className="report-header-meta">
+            <StatusBadge status={results.run.status} />
+            <button className="secondary-button" onClick={rerunCurrent} disabled={rerunning}><RotateCcw size={16} /> Run again</button>
+            <Link to={inProductWorkspace ? "/app" : "/kabir"} className="icon-button" title="Back to workspace" aria-label="Back to workspace"><ArrowLeft size={18} /></Link>
+          </div>
+        </header>
+        <section className="analyst-work-panel">
+          <div className="analyst-main">
+            <p className="section-marker">Live analysis</p>
+            <h1>The analyst is at work.</h1>
+            <p>Reading and structuring the feedback streams for {results.company.name}. The report will appear here as soon as the first signals are ready.</p>
+            <div className="live-progress">
+              <div><span>Analyzing feedback data</span><strong>{Math.round((results.run.progress || 0) * 100)}%</strong></div>
+              <i><b style={{ width: Math.max(3, Math.round((results.run.progress || 0) * 100)) + "%" }} /></i>
+              <small>{results.run.current_stage}{results.run.stage_detail ? " · " + results.run.stage_detail : ""}</small>
+            </div>
+            <div className="analyst-step-list" aria-label="Analysis steps">
+              {ANALYST_STEPS.map((step, index) => (
+                <div className={index < currentIndex ? "complete" : index === currentIndex ? "active" : "pending"} key={step.stage}>
+                  <span>{index < currentIndex ? "Done" : index === currentIndex ? "Now" : "Next"}</span>
+                  <strong>{step.label}</strong>
+                </div>
+              ))}
+            </div>
+            <p className="analyst-timing">Timing follows the selected sources and Gemini Batch queue. This screen updates from real worker events; it never invents progress.</p>
+          </div>
+          <aside className="preliminary-signals">
+            <div className="signal-heading"><Radar size={20} /><h2>Preliminary signals</h2></div>
+            {results.themes.slice(0, 2).map((theme, index) => (
+              <article className="signal-card" key={theme.id}>
+                <span className={index === 0 ? "tag tag-good" : "tag tag-purple"}>{index === 0 ? "Emerging" : "Notable"}</span>
+                <h3>{theme.count} mentions of {humanizeTheme(theme.theme)}</h3>
+                <p>Detected in the feedback processed so far.</p>
+              </article>
+            ))}
+            {!results.themes.length ? <div className="pending-signal"><Activity size={18} /> Source reads are in progress.</div> : null}
+            <p>Early indicators only. The full report is still compiling.</p>
+          </aside>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="app-shell detail-shell">
-      <header className="command-header result-header">
+      <header className="editorial-app-header report-header">
         <div>
-          <p className="eyebrow">Company Results</p>
-          <h1>{results.company.name}</h1>
-          <p>{results.run.current_stage} · {results.run.stage_detail || "waiting for next event"}</p>
+          <Link to="/" className="brand-lockup"><span>VOC</span>Voice of Customer</Link>
         </div>
-        <div className="header-metrics">
+        <div className="report-header-meta">
           <StatusBadge status={results.run.status} />
           <button className="secondary-button" onClick={rerunCurrent} disabled={rerunning} title="Queue a fresh run for this company">
             <RotateCcw size={16} />
-            Rerun
+            Run again
+          </button>
+          <button className="secondary-button" onClick={() => window.print()} title="Print this customer intelligence report">
+            <Printer size={16} />
+            Print
           </button>
           <Link to={inProductWorkspace ? "/app" : "/kabir"} className="icon-button" title="Back to dashboard">
             <ArrowLeft size={18} />
           </Link>
         </div>
       </header>
+
+      <section className="report-masthead">
+        <div>
+          <p className="section-marker">Customer intelligence report</p>
+          <h1>Drive growth through customer insight.</h1>
+          <p>Evidence from {results.company.name}'s selected feedback streams, organized into the decisions that deserve attention now.</p>
+        </div>
+        <div className="report-masthead-status"><strong>{results.run.current_stage}</strong><span>{Math.round((results.run.progress || 0) * 100)}% complete</span></div>
+      </section>
 
       <section className="run-progress-panel">
         <div>
@@ -194,6 +267,25 @@ export function ResultsPage() {
           Low confidence: quarantine {Math.round(results.run.quarantine_rate * 100)}%, L1 other {Math.round(otherShare * 100)}%.
         </section>
       ) : null}
+
+      <section className="executive-summary">
+        <div className="health-score">
+          <p className="section-marker">Customer feedback risk</p>
+          <strong>{feedbackRiskScore}</strong>
+          <small>/ 100</small>
+          <span>{String(feedbackRisk.evidence_grade || "early")} evidence · selected feedback</span>
+        </div>
+        <div className="executive-pulse">
+          <div><p className="section-marker">Executive pulse</p><span className="tag tag-good">Evidence-led</span></div>
+          <h2>{String(insightSummary.headline || (topTheme ? humanizeTheme(topTheme.theme) : "Customer signal summary"))}</h2>
+          <p>{String(insightSummary.executive_pulse || (topTheme ? humanizeTheme(topTheme.theme) + " is the clearest current signal, appearing in " + topTheme.count + " selected feedback items." : "The strongest customer themes will appear as classification completes."))}</p>
+        </div>
+        <div className="feedback-risk">
+          <p className="section-marker">Mission action</p>
+          <h2>{String(firstAction.title || "What to do next")}</h2>
+          <p>{String(firstAction.rationale || feedbackRisk.scope || (topTheme ? "Review the underlying evidence for " + humanizeTheme(topTheme.theme) + " before assigning an owner or response." : "No concentrated risk has been identified yet."))}</p>
+        </div>
+      </section>
 
       <section className="insight-grid">
         <div className="insight-card">
@@ -465,6 +557,10 @@ function rollupProvider(results: Results | null, provider: "gemini" | "apify") {
     cost: Number(rollup.cost || 0),
     tokens: Number(rollup.tokens || rollup.total_tokens || 0),
   };
+}
+
+function toSummaryRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function humanizeTheme(theme?: string | null) {

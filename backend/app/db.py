@@ -61,6 +61,7 @@ def ensure_lightweight_migrations() -> None:
             connection.execute(text("alter table companies alter column selected_sources set default '[\"play\", \"appstore\"]'::jsonb"))
             connection.execute(text("alter table companies alter column selected_sources set not null"))
             connection.execute(text("alter table companies add column if not exists analysis_goals jsonb not null default '[]'::jsonb"))
+            connection.execute(text("alter table companies add column if not exists analysis_focus text"))
             connection.execute(text("alter table companies add column if not exists maps_url text"))
             connection.execute(text("alter table companies add column if not exists instagram_url text"))
             connection.execute(text("alter table companies add column if not exists twitter_url text"))
@@ -94,6 +95,7 @@ def ensure_lightweight_migrations() -> None:
             connection.execute(text("create index if not exists companies_guest_id_idx on companies(guest_id)"))
             connection.execute(text("alter table runs add column if not exists owner_user_id uuid"))
             connection.execute(text("alter table runs add column if not exists guest_id text"))
+            connection.execute(text("alter table runs add column if not exists insight_summary jsonb not null default '{}'::jsonb"))
             connection.execute(text("create index if not exists runs_owner_user_id_idx on runs(owner_user_id)"))
             connection.execute(text("create index if not exists runs_guest_id_idx on runs(guest_id)"))
             connection.execute(
@@ -174,6 +176,8 @@ def ensure_lightweight_migrations() -> None:
                 )
             if "analysis_goals" not in columns:
                 connection.execute(text("alter table companies add column analysis_goals json not null default '[]'"))
+            if "analysis_focus" not in columns:
+                connection.execute(text("alter table companies add column analysis_focus varchar"))
             if "maps_url" not in columns:
                 connection.execute(text("alter table companies add column maps_url varchar"))
             if "instagram_url" not in columns:
@@ -191,6 +195,8 @@ def ensure_lightweight_migrations() -> None:
                 connection.execute(text("alter table runs add column owner_user_id varchar"))
             if "guest_id" not in run_columns:
                 connection.execute(text("alter table runs add column guest_id varchar"))
+            if "insight_summary" not in run_columns:
+                connection.execute(text("alter table runs add column insight_summary json not null default '{}'"))
             connection.execute(
                 text(
                     """

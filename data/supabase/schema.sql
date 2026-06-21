@@ -12,6 +12,23 @@ exception
     when duplicate_object then null;
 end $$;
 
+create table if not exists users (
+    id uuid primary key default gen_random_uuid(),
+    email text not null unique,
+    display_name text,
+    created_at timestamptz not null default now(),
+    last_seen_at timestamptz not null default now()
+);
+
+create table if not exists user_sessions (
+    id uuid primary key default gen_random_uuid(),
+    user_id uuid not null references users(id) on delete cascade,
+    token_hash text not null unique,
+    expires_at timestamptz not null,
+    created_at timestamptz not null default now()
+);
+create index if not exists user_sessions_user_idx on user_sessions(user_id);
+
 create table if not exists companies (
     id uuid primary key default gen_random_uuid(),
     owner_user_id uuid,
@@ -27,6 +44,7 @@ create table if not exists companies (
     business_type text not null default 'other',
     selected_sources jsonb not null default '["play", "appstore"]'::jsonb,
     analysis_goals jsonb not null default '[]'::jsonb,
+    analysis_focus text,
     maps_url text,
     instagram_url text,
     twitter_url text,
@@ -53,11 +71,21 @@ create table if not exists runs (
     budget_cap numeric(10, 4) not null default 1,
     dedup_ratio numeric(6, 4) not null default 0,
     quarantine_rate numeric(6, 4) not null default 0,
+    insight_summary jsonb not null default '{}'::jsonb,
     started_at timestamptz,
     finished_at timestamptz,
     error text,
     created_at timestamptz not null default now()
 );
+
+create table if not exists legacy_run_access (
+    id uuid primary key default gen_random_uuid(),
+    run_id uuid not null references runs(id) on delete cascade,
+    user_id uuid not null references users(id) on delete cascade,
+    created_at timestamptz not null default now(),
+    constraint legacy_run_access_unique unique (run_id, user_id)
+);
+create index if not exists legacy_run_access_user_idx on legacy_run_access(user_id);
 
 create index if not exists runs_company_started_idx on runs(company_id, started_at desc);
 create index if not exists runs_status_idx on runs(status);
@@ -168,6 +196,7 @@ where selected_sources is null;
 alter table companies alter column selected_sources set default '["play", "appstore"]'::jsonb;
 alter table companies alter column selected_sources set not null;
 alter table companies add column if not exists analysis_goals jsonb not null default '[]'::jsonb;
+alter table companies add column if not exists analysis_focus text;
 alter table companies add column if not exists maps_url text;
 alter table companies add column if not exists instagram_url text;
 alter table companies add column if not exists twitter_url text;
@@ -176,6 +205,7 @@ alter type review_source add value if not exists 'instagram';
 alter type review_source add value if not exists 'twitter';
 alter table reviews add column if not exists l2_theme text;
 alter table themes add column if not exists l2_subthemes jsonb not null default '[]'::jsonb;
+alter table runs add column if not exists insight_summary jsonb not null default '{}'::jsonb;
 alter table reviews drop column if exists bucket;
 alter table themes drop column if exists bucket;
 alter table reviews drop column if exists english_gloss;

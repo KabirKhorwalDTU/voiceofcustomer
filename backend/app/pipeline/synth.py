@@ -205,6 +205,14 @@ def build_summary(run: Run, reviews: List[Review], themes: List[Theme]) -> Dict[
             }
         )
     source_quality.sort(key=lambda row: row["rows"], reverse=True)
+    rated = [review.rating for review in reviews if review.rating is not None]
+    # This is intentionally a feedback-risk score, not a universal business-health
+    # claim: the product deliberately prioritizes selected low-rating feedback.
+    rating_risk = sum((4 - rating) / 3 for rating in rated) / len(rated) if rated else 0.65
+    lead_share = float(themes[0].normalized_frequency or 0) if themes else 0
+    concentration_risk = min(1.0, lead_share / 0.5)
+    feedback_risk = round(100 * ((rating_risk * 0.75) + (concentration_risk * 0.25)))
+    evidence_grade = "strong" if len(reviews) >= 150 and len(source_quality) >= 2 else "directional" if len(reviews) >= 40 else "early"
     return {
         "total_reviews": len(reviews),
         "date_range": {
@@ -234,6 +242,14 @@ def build_summary(run: Run, reviews: List[Review], themes: List[Theme]) -> Dict[
         "cost_estimate": run.cost_estimate,
         "dedup_ratio": run.dedup_ratio,
         "quarantine_rate": run.quarantine_rate,
+        "feedback_risk": {
+            "score": feedback_risk,
+            "label": "Customer feedback risk",
+            "evidence_grade": evidence_grade,
+            "method": "Weighted selected-review rating risk (75%) and concentration of the strongest recurring issue (25%).",
+            "scope": "Based on selected public feedback, not a universal measure of business health.",
+        },
+        "insight_summary": run.insight_summary or {},
     }
 
 

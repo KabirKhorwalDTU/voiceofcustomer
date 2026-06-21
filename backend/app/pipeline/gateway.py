@@ -206,6 +206,36 @@ class LLMGateway:
             self.usage.malformed_retries.append({"attempt": "theme_repair_failed", "reason": redact_llm_error(exc)})
             return theme_set
 
+    async def synthesize_mission(self, goals: List[str], focus: str, evidence: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a compact, mission-aware executive readout from ranked evidence only."""
+        prompt = {
+            "task": "mission_aware_feedback_synthesis",
+            "mission": {"goals": goals[:3], "focus": (focus or "")[:600]},
+            "evidence": evidence,
+            "rules": [
+                "Use only the supplied evidence; do not invent facts or metrics.",
+                "Answer the selected mission and optional focus directly.",
+                "Keep every string concise and owner-readable.",
+                "Return strict JSON only.",
+            ],
+            "output": {
+                "headline": "max 110 characters",
+                "executive_pulse": "max 420 characters",
+                "recommended_actions": [{"title": "max 60 characters", "rationale": "max 150 characters"}],
+            },
+        }
+        if self._dev_mode:
+            return self._deterministic_mission_synthesis(goals, focus, evidence)
+        try:
+            if self.provider == "gemini":
+                data = await self._json_call_batch(prompt, "voc-mission-synthesis", {"key": "mission-synthesis"})
+            else:
+                data = await self._json_call(prompt)
+            return self._validate_mission_synthesis(data, goals, focus, evidence)
+        except RuntimeError as exc:
+            self.usage.malformed_retries.append({"attempt": "mission_synthesis_fallback", "reason": redact_llm_error(exc)})
+            return self._deterministic_mission_synthesis(goals, focus, evidence)
+
     async def classify_batch(self, reviews: List[CleanReview], theme_set: ThemeSet) -> List[Tag]:
         if self._dev_mode:
             return [self._heuristic_tag(review, theme_set) for review in reviews]
@@ -337,6 +367,39 @@ class LLMGateway:
             "reviews": [self._review_prompt_row(index, review) for index, review in enumerate(sample, start=1)],
             "row_format": "[row_id, rating, text]",
             "output": {"themes": [{"l1_theme": "snake_case_label", "l2_subthemes": ["snake_case_label"]}]},
+        }
+
+    def _validate_mission_synthesis(self, data: Any, goals: List[str], focus: str, evidence: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(data, dict):
+            return self._deterministic_mission_synthesis(goals, focus, evidence)
+        actions = []
+        for item in (data.get("recommended_actions") or [])[:3]:
+            if not isinstance(item, dict):
+                continue
+            title = " ".join(str(item.get("title") or "").split())[:60]
+            rationale = " ".join(str(item.get("rationale") or "").split())[:150]
+            if title:
+                actions.append({"title": title, "rationale": rationale})
+        fallback = self._deterministic_mission_synthesis(goals, focus, evidence)
+        return {
+            "headline": " ".join(str(data.get("headline") or fallback["headline"]).split())[:110],
+            "executive_pulse": " ".join(str(data.get("executive_pulse") or fallback["executive_pulse"]).split())[:420],
+            "recommended_actions": actions or fallback["recommended_actions"],
+            "mission": {"goals": goals[:3], "focus": (focus or "")[:600]},
+        }
+
+    def _deterministic_mission_synthesis(self, goals: List[str], focus: str, evidence: Dict[str, Any]) -> Dict[str, Any]:
+        themes = evidence.get("top_themes") or []
+        lead = themes[0] if themes else {}
+        label = str(lead.get("display_theme") or lead.get("theme") or "Customer feedback")
+        share = round(float(lead.get("share") or 0) * 100)
+        mission = goals[0] if goals else "Customer feedback review"
+        focus_line = f" Focus requested: {focus.strip()[:160]}." if focus and focus.strip() else ""
+        return {
+            "headline": f"{label} is the strongest signal ({share}% of selected feedback).",
+            "executive_pulse": f"For {mission.lower()}, start with the recurring issue behind {label.lower()} and validate it against the supporting customer quotes.{focus_line}",
+            "recommended_actions": [{"title": f"Investigate {label}", "rationale": "Review the supporting quotes, isolate the repeated failure point, and assign one owner for a concrete fix."}],
+            "mission": {"goals": goals[:3], "focus": (focus or "")[:600]},
         }
 
     def _classification_prompt(self, reviews: List[CleanReview], theme_set: ThemeSet) -> Dict[str, Any]:

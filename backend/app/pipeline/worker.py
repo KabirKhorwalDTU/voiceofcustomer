@@ -12,7 +12,7 @@ from app.models import Review, Run, RunLog, Theme
 from app.pipeline.apify import BudgetExceeded, scrape_sources
 from app.pipeline.cleaner import clean_and_dedup
 from app.pipeline.gateway import BATCH_POLL_TIMEOUT_SECONDS, LLMGateway, redact_llm_error
-from app.pipeline.synth import build_theme_rows
+from app.pipeline.synth import build_summary, build_theme_rows
 from app.pipeline.types import CleanReview, MAX_L2_THEMES, Tag, ThemeSet
 from app.repository import get_settings, log_run_event, set_run_status
 
@@ -535,6 +535,9 @@ class Worker:
                         )
             enforce_l2_threshold(tags, theme_set, min_parent_rows=5)
             tag_map: Dict[str, Tag] = {tag.review_hash: tag for tag in tags}
+            mission_evidence: Dict[str, object] = {}
+            mission_goals: List[str] = []
+            mission_focus = ""
 
             with session_scope() as session:
                 run = session.get(Run, run_id)
@@ -609,6 +612,76 @@ class Worker:
                     details={"theme_count": len(theme_rows), "representative_quotes": len(top_hashes)},
                 )
 
+                summary = build_summary(run, rows, theme_rows)
+                mission_goals = list(run.company.analysis_goals or [])
+                mission_focus = run.company.analysis_focus or ""
+                mission_evidence = {
+                    "total_reviews": summary["total_reviews"],
+                    "source_mix": summary["source_mix"],
+                    "feedback_risk": summary["feedback_risk"],
+                    "other_share": summary["other_share"],
+                    "top_themes": [
+                        {
+                            "theme": theme["theme"],
+                            "display_theme": theme["display_theme"],
+                            "count": theme["count"],
+                            "share": theme["share"],
+                            "l2_subthemes": [
+                                {"label": item.get("display_label") or item.get("label"), "count": item.get("count"), "share": item.get("score")}
+                                for item in (theme.get("l2_subthemes") or [])[:3]
+                            ],
+                        }
+                        for theme in summary["top_themes"][:5]
+                    ],
+                }
+                log_run_event(
+                    session,
+                    run,
+                    stage="synthesis",
+                    event="mission_synthesis_started",
+                    status="ok",
+                    provider=settings.provider,
+                    model=settings.model,
+                    details={
+                        "goals": mission_goals,
+                        "focus_supplied": bool(mission_focus.strip()),
+                        "evidence_themes": len(mission_evidence["top_themes"]),
+                    },
+                )
+
+            synthesis_gateway = LLMGateway(config, settings, progress_callback=make_llm_progress_logger("synthesis"))
+            mission_summary = await synthesis_gateway.synthesize_mission(mission_goals, mission_focus, mission_evidence)
+            synthesis_usage = synthesis_gateway.usage
+
+            with session_scope() as session:
+                run = session.get(Run, run_id)
+                if run is None:
+                    return
+                run.insight_summary = mission_summary
+                run.cost_estimate = round(float(run.cost_estimate or 0) + synthesis_usage.cost_usd, 4)
+                log_run_event(
+                    session,
+                    run,
+                    stage="synthesis",
+                    event="mission_synthesis_completed",
+                    status="ok",
+                    provider=settings.provider,
+                    model=settings.model,
+                    cost_usd=synthesis_usage.cost_usd,
+                    input_tokens=synthesis_usage.input_tokens,
+                    output_tokens=synthesis_usage.output_tokens,
+                    total_tokens=synthesis_usage.total_tokens,
+                    details={
+                        "calls": synthesis_usage.calls,
+                        "path": synthesis_usage.path,
+                        "goals": mission_goals,
+                        "focus_supplied": bool(mission_focus.strip()),
+                    },
+                )
+                if run.cost_estimate > float(settings.per_run_budget_usd):
+                    log_run_event(session, run, stage="budget", event="budget_exceeded", status="partial", cost_usd=float(run.cost_estimate), details={"budget_cap": float(settings.per_run_budget_usd)})
+                    set_run_status(session, run, "partial", "Budget cap exceeded after mission synthesis")
+
                 failed_sources = [src for src, status in (run.completeness or {}).items() if status.get("status") not in {"ok", "disabled"}]
                 terminal = "partial" if failed_sources or run.status == "partial" else "done"
                 log_run_event(
@@ -623,6 +696,7 @@ class Worker:
                         "source_counts": run.source_counts,
                         "dedup_ratio": run.dedup_ratio,
                         "quarantine_rate": run.quarantine_rate,
+                        "mission_summary": bool(run.insight_summary),
                     },
                 )
                 set_run_status(session, run, terminal)

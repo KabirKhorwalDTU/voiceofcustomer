@@ -5,13 +5,14 @@ from sqlalchemy import and_, case, cast, delete, desc, func, or_, select, String
 from sqlalchemy.orm import Session, joinedload
 
 from app.auth import Actor
-from app.models import Company, Review, Run, RunLog, Settings, Theme
+from app.models import Company, LegacyRunAccess, Review, Run, RunLog, Settings, Theme, User
 from app.onboarding import normalize_business_type, normalize_sources, selected_sources_for_company
 from app.pipeline.resolver import ResolvedLinks, resolve_links
 from app.schemas import SubmitRunRequest
 
 
 ACTIVE_STATUSES = ("queued", "scraping", "classifying")
+LEGACY_WORKSPACE_EMAIL = "kabirkhorwal2001@gmail.com"
 
 
 def get_settings(session: Session) -> Settings:
@@ -42,17 +43,28 @@ def actor_filters(model, actor: Optional[Actor]):
     return [model.owner_user_id.is_(None), model.guest_id.is_(None)]
 
 
-def can_access_run(run: Run, actor: Optional[Actor]) -> bool:
+def is_legacy_workspace_actor(session: Session, actor: Optional[Actor]) -> bool:
+    if not actor or not actor.user_id:
+        return False
+    email = session.execute(select(User.email).where(User.id == actor.user_id)).scalar_one_or_none()
+    return bool(email and email.strip().lower() == LEGACY_WORKSPACE_EMAIL)
+
+
+def can_access_run(run: Run, actor: Optional[Actor], session: Optional[Session] = None) -> bool:
     if actor is not None and actor.is_operator:
         return True
     if actor is None:
-        return False
-    if not run.owner_user_id and not run.guest_id:
         return False
     if run.owner_user_id and actor.user_id == run.owner_user_id:
         return True
     if run.guest_id and actor.guest_id == run.guest_id and not run.owner_user_id:
         return True
+    if session and actor.user_id:
+        granted = session.execute(
+            select(LegacyRunAccess.id).where(LegacyRunAccess.run_id == run.id, LegacyRunAccess.user_id == actor.user_id)
+        ).scalar_one_or_none()
+        if granted:
+            return True
     return False
 
 
@@ -106,6 +118,7 @@ def create_or_get_company(
             business_type=business_type,
             selected_sources=selected_sources,
             analysis_goals=list(dict.fromkeys(request.analysis_goals))[:8],
+            analysis_focus=request.analysis_focus.strip()[:600] or None,
             maps_url=request.maps_url.strip() or None,
             instagram_url=request.instagram_url.strip() or None,
             twitter_url=request.twitter_url.strip() or None,
@@ -125,6 +138,7 @@ def create_or_get_company(
         company.business_type = business_type
         company.selected_sources = selected_sources
         company.analysis_goals = list(dict.fromkeys(request.analysis_goals))[:8]
+        company.analysis_focus = request.analysis_focus.strip()[:600] or None
         company.maps_url = request.maps_url.strip() or None
         company.instagram_url = request.instagram_url.strip() or None
         company.twitter_url = request.twitter_url.strip() or None
@@ -182,6 +196,7 @@ def create_run(session: Session, request: SubmitRunRequest, actor: Optional[Acto
             "business_type": company.business_type,
             "selected_sources": selected_sources_for_company(company),
             "analysis_goals": company.analysis_goals or [],
+            "analysis_focus": company.analysis_focus or "",
             "maps_url_supplied": bool(company.maps_url),
             "instagram_url_supplied": bool(company.instagram_url),
             "twitter_url_supplied": bool(company.twitter_url),
@@ -193,7 +208,7 @@ def create_run(session: Session, request: SubmitRunRequest, actor: Optional[Acto
 
 def rerun_company_from_run(session: Session, run_id: str, actor: Optional[Actor] = None) -> Tuple[Run, bool]:
     source_run = get_run(session, run_id)
-    if not source_run or not can_access_run(source_run, actor):
+    if not source_run or not can_access_run(source_run, actor, session):
         raise KeyError("run not found")
     company = source_run.company
     active = session.execute(
@@ -215,8 +230,8 @@ def rerun_company_from_run(session: Session, run_id: str, actor: Optional[Actor]
     settings = get_settings(session)
     run = Run(
         company_id=company.id,
-        owner_user_id=source_run.owner_user_id,
-        guest_id=source_run.guest_id,
+        owner_user_id=actor.user_id if actor and actor.user_id else source_run.owner_user_id,
+        guest_id=(actor.guest_id if actor and actor.guest_id and not actor.user_id else source_run.guest_id),
         status="queued",
         budget_cap=float(settings.per_run_budget_usd),
         company=company,
@@ -242,6 +257,7 @@ def rerun_company_from_run(session: Session, run_id: str, actor: Optional[Actor]
             "business_type": company.business_type,
             "selected_sources": selected_sources_for_company(company),
             "analysis_goals": company.analysis_goals or [],
+            "analysis_focus": company.analysis_focus or "",
         },
     )
     return run, False
@@ -251,7 +267,13 @@ def delete_run_by_id(session: Session, run_id: str, actor: Optional[Actor] = Non
     run = get_run(session, run_id)
     if not run:
         return False
-    if not can_access_run(run, actor):
+    # Legacy history is mirrored read-only. A rerun creates an owned copy;
+    # deleting a historical operator run must remain impossible from /app.
+    owned_by_actor = bool(
+        actor
+        and ((actor.user_id and run.owner_user_id == actor.user_id) or (actor.guest_id and run.guest_id == actor.guest_id and not run.owner_user_id))
+    )
+    if not owned_by_actor:
         return False
     if run.status in ACTIVE_STATUSES:
         raise ValueError("active runs cannot be deleted")
@@ -272,10 +294,14 @@ def list_runs(session: Session, limit: int = 250) -> List[Run]:
 
 
 def list_actor_runs(session: Session, actor: Actor, limit: int = 250) -> List[Run]:
+    filters = actor_filters(Run, actor)
+    if actor.user_id:
+        granted_runs = select(LegacyRunAccess.run_id).where(LegacyRunAccess.user_id == actor.user_id)
+        filters = [or_(Run.owner_user_id == actor.user_id, Run.id.in_(granted_runs))]
     return list(
         session.execute(
             select(Run)
-            .where(*actor_filters(Run, actor))
+            .where(*filters)
             .options(joinedload(Run.company))
             .order_by(desc(Run.created_at))
             .limit(limit)
@@ -311,7 +337,7 @@ def get_run(session: Session, run_id: str) -> Optional[Run]:
 
 def get_run_results(session: Session, run_id: str, actor: Optional[Actor] = None) -> Tuple[Run, Company, List[Review], List[Theme]]:
     run = get_run(session, run_id)
-    if not run or not can_access_run(run, actor):
+    if not run or not can_access_run(run, actor, session):
         raise KeyError("run not found")
     company = run.company
     reviews = list(session.execute(select(Review).where(Review.run_id == run_id).order_by(desc(Review.date))).scalars())
@@ -335,7 +361,7 @@ def query_run_reviews(
     q: str = "",
 ) -> Tuple[List[Review], int]:
     run = get_run(session, run_id)
-    if not run or not can_access_run(run, actor):
+    if not run or not can_access_run(run, actor, session):
         raise KeyError("run not found")
     page = max(page, 1)
     page_size = max(1, min(page_size, 100))
@@ -385,9 +411,13 @@ def query_run_reviews(
 
 
 def get_company_runs(session: Session, company_id: str, actor: Optional[Actor] = None) -> List[Run]:
+    filters = actor_filters(Run, actor)
+    if actor and actor.user_id:
+        granted_runs = select(LegacyRunAccess.run_id).where(LegacyRunAccess.user_id == actor.user_id)
+        filters = [or_(Run.owner_user_id == actor.user_id, Run.id.in_(granted_runs))]
     return list(
         session.execute(
-            select(Run).where(Run.company_id == company_id, *actor_filters(Run, actor)).options(joinedload(Run.company)).order_by(desc(Run.created_at))
+            select(Run).where(Run.company_id == company_id, *filters).options(joinedload(Run.company)).order_by(desc(Run.created_at))
         ).scalars()
     )
 
@@ -406,6 +436,28 @@ def claim_guest_workspace(session: Session, guest_id: str, user_id: str) -> int:
         run.guest_id = None
     session.flush()
     return len(runs)
+
+
+def grant_legacy_kabir_workspace(session: Session, user_id: str) -> int:
+    """One-way visibility grants for historical pre-workspace runs only."""
+    user = session.get(User, user_id)
+    if not user or user.email.strip().lower() != LEGACY_WORKSPACE_EMAIL:
+        return 0
+    legacy_ids = session.execute(
+        select(Run.id).where(Run.owner_user_id.is_(None), Run.guest_id.is_(None))
+    ).scalars().all()
+    if not legacy_ids:
+        return 0
+    granted_ids = set(
+        session.execute(
+            select(LegacyRunAccess.run_id).where(LegacyRunAccess.user_id == user_id, LegacyRunAccess.run_id.in_(legacy_ids))
+        ).scalars()
+    )
+    for run_id in legacy_ids:
+        if run_id not in granted_ids:
+            session.add(LegacyRunAccess(run_id=run_id, user_id=user_id))
+    session.flush()
+    return len(legacy_ids) - len(granted_ids)
 
 
 def set_run_status(session: Session, run: Run, status: str, error: Optional[str] = None) -> None:

@@ -1,19 +1,21 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { Clock3, LockKeyhole, RotateCcw, Search, Trash2 } from "lucide-react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { ArrowRight, Clock3, LockKeyhole, RotateCcw, Search, Trash2 } from "lucide-react";
 import { api, AuthUser, getAuthUser, Run } from "../lib/api";
-import { StatusBadge } from "../components/StatusBadge";
 import { OnboardingFlow } from "../components/OnboardingFlow";
+import { StatusBadge } from "../components/StatusBadge";
 
 const ACTIVE = new Set(["queued", "scraping", "classifying"]);
 
 export function ProductWorkspace() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [runs, setRuns] = useState<Run[]>([]);
   const [email, setEmail] = useState("");
   const [query, setQuery] = useState("");
   const [user, setUser] = useState<AuthUser | null>(() => getAuthUser());
   const [authOpen, setAuthOpen] = useState(false);
+  const [setupOpen, setSetupOpen] = useState(Boolean(searchParams.get("business")));
   const [busy, setBusy] = useState(false);
   const [actionRunId, setActionRunId] = useState("");
   const [error, setError] = useState("");
@@ -29,7 +31,6 @@ export function ProductWorkspace() {
     return () => window.clearInterval(interval);
   }, []);
 
-  const activeRuns = useMemo(() => runs.filter((run) => ACTIVE.has(run.status)), [runs]);
   const filteredRuns = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return runs;
@@ -60,9 +61,9 @@ export function ProductWorkspace() {
     try {
       const response = await api.rerun(run.id);
       await loadRuns();
-      navigate(`/app/runs/${response.run.id}`);
+      navigate("/app/runs/" + response.run.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not queue rerun");
+      setError(err instanceof Error ? err.message : "Could not queue a new run.");
     } finally {
       setActionRunId("");
     }
@@ -70,17 +71,17 @@ export function ProductWorkspace() {
 
   async function deleteRun(run: Run) {
     if (ACTIVE.has(run.status)) {
-      setError("Active runs cannot be deleted.");
+      setError("Active analyses cannot be deleted.");
       return;
     }
-    if (!window.confirm(`Delete run for ${run.company?.name || run.company_id}?`)) return;
+    if (!window.confirm("Delete the analysis for " + (run.company?.name || run.company_id) + "?")) return;
     setActionRunId(run.id);
     setError("");
     try {
       await api.deleteRun(run.id);
       await loadRuns();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not delete run");
+      setError(err instanceof Error ? err.message : "Could not delete the analysis.");
     } finally {
       setActionRunId("");
     }
@@ -93,133 +94,56 @@ export function ProductWorkspace() {
   }
 
   return (
-    <main className="app-shell product-shell">
-      <header className="command-header">
-        <div>
-          <Link to="/" className="brand-lockup compact-brand"><span>VOC</span> Analyst</Link>
-          <h1>Workspace</h1>
-          <p>{user ? `Saved runs for ${user.email}` : "Guest runs are saved in this browser. Sign in to keep them across devices."}</p>
-        </div>
-        <div className="header-metrics">
-          <button className="secondary-button" type="button" onClick={() => setAuthOpen(true)}>
-            <LockKeyhole size={16} />
-            {user ? "Switch account" : "Sign in to save"}
-          </button>
-          {user ? <button className="secondary-button" type="button" onClick={logout}>Log out</button> : null}
+    <main className="app-shell workspace-shell">
+      <header className="editorial-app-header">
+        <Link to="/" className="brand-lockup"><span>VOC</span>Voice of Customer</Link>
+        <div className="editorial-app-actions">
+          {user ? <button className="secondary-button" type="button" onClick={logout}>Log out</button> : <button className="secondary-button" type="button" onClick={() => setAuthOpen(true)}><LockKeyhole size={16} /> Sign in</button>}
         </div>
       </header>
 
-      {error ? <section className="banner danger">{error}</section> : null}
-
-      <section className="workspace-grid">
-        <section className="section-block product-submit-panel">
-          <div className="section-title-row">
-            <div>
-              <h2>New analysis</h2>
-              <p>Start with a business name. We recommend sources, then ask only for the details that improve matching.</p>
-            </div>
-          </div>
-          <OnboardingFlow compact onStarted={async (runId) => { await loadRuns(); navigate(`/app/runs/${runId}`); }} />
-        </section>
-
-        <section className="section-block workspace-status-panel">
-          <div className="section-title-row">
-            <div>
-              <h2>Active work</h2>
-              <p>{activeRuns.length} runs currently queued, scraping, or classifying.</p>
-            </div>
-          </div>
-          <div className="workspace-active-list">
-            {activeRuns.slice(0, 5).map((run) => (
-              <Link to={`/app/runs/${run.id}`} className="workspace-active-row" key={run.id}>
-                <strong>{run.company?.name || run.company_id}</strong>
-                <span>{run.current_stage}</span>
-                <div className="progress-track">
-                  <i style={{ width: `${Math.max(3, Math.round((run.progress || 0) * 100))}%` }} />
-                </div>
-              </Link>
-            ))}
-            {!activeRuns.length ? <div className="empty-slab">No active runs right now.</div> : null}
-          </div>
-        </section>
+      <section className="workspace-title">
+        <div><p className="section-marker">Workspace</p><h1>Your customer intelligence.</h1><p>{user ? "Saved runs for " + user.email + "." : "Guest runs stay in this browser until you sign in."}</p></div>
+        <button className="primary-button" type="button" onClick={() => setSetupOpen((current) => !current)}>{setupOpen ? "Close setup" : "Start a new check"} <ArrowRight size={17} /></button>
       </section>
 
-      <section className="history-panel">
-        <div className="table-toolbar">
-          <div>
-            <h2>Run history</h2>
-            <p>{filteredRuns.length} visible runs</p>
-          </div>
-          <label className="search-box">
-            <Search size={15} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search runs..." />
-          </label>
+      {error ? <section className="banner danger workspace-alert">{error}</section> : null}
+      {setupOpen ? <section className="workspace-setup"><OnboardingFlow compact initialName={searchParams.get("business") || ""} onStarted={async (runId) => { await loadRuns(); navigate("/app/runs/" + runId); }} /></section> : null}
+
+      <section className="workspace-list-section">
+        <div className="workspace-list-toolbar">
+          <div><h2>All intelligence checks</h2><p>{filteredRuns.length} analyses, including live work and completed reports.</p></div>
+          <label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search business, stage, or status" /></label>
         </div>
-        <div className="table-wrap command-table-wrap">
-          <table className="command-table">
-            <thead>
-              <tr>
-                <th>Company</th>
-                <th>Stage</th>
-                <th>Status</th>
-                <th>Cost</th>
-                <th>Quarantine</th>
-                <th>Updated</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredRuns.map((run) => (
-                <tr key={run.id} onClick={() => navigate(`/app/runs/${run.id}`)}>
-                  <td>
-                    <strong>{run.company?.name || run.company_id}</strong>
-                    <span>{run.company?.domain || run.model_used || "source discovery pending"}</span>
-                  </td>
-                  <td>{run.current_stage}</td>
-                  <td><StatusBadge status={run.status} /></td>
-                  <td>{formatInr(run.cost_estimate)}</td>
-                  <td>{Math.round(run.quarantine_rate * 100)}%</td>
-                  <td>{run.finished_at ? new Date(run.finished_at).toLocaleString() : <span><Clock3 size={13} /> In progress</span>}</td>
-                  <td>
-                    <div className="row-actions" onClick={(event) => event.stopPropagation()}>
-                      <button className="icon-button tiny-action" type="button" title="Rerun" disabled={actionRunId === run.id} onClick={() => rerun(run)}>
-                        <RotateCcw size={15} />
-                      </button>
-                      <button className="icon-button tiny-action danger-action" type="button" title="Delete" disabled={ACTIVE.has(run.status) || actionRunId === run.id} onClick={() => deleteRun(run)}>
-                        <Trash2 size={15} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {!filteredRuns.length ? <tr><td colSpan={7}>No runs yet. Start an analysis above.</td></tr> : null}
-            </tbody>
-          </table>
+        <div className="workspace-list">
+          <div className="workspace-list-head" aria-hidden="true"><span>Business entity</span><span>Latest activity</span><span>Status</span><span>Actions</span></div>
+          {filteredRuns.map((run) => (
+            <article className={"workspace-run " + (ACTIVE.has(run.status) ? "is-active" : "")} key={run.id}>
+              <button className="workspace-run-main" type="button" onClick={() => navigate("/app/runs/" + run.id)}>
+                <span className="workspace-company"><i>{(run.company?.name || run.company_id).slice(0, 1).toUpperCase()}</i><span><strong>{run.company?.name || run.company_id}</strong><small>{run.company?.domain || run.model_used || "Customer feedback analysis"}</small></span></span>
+                <span className="workspace-stage">{ACTIVE.has(run.status) ? <><em>Analyst at work</em><strong>{run.current_stage}</strong><span className="mini-progress"><i style={{ width: Math.max(3, Math.round((run.progress || 0) * 100)) + "%" }} /></span></> : <><strong>{run.finished_at ? new Date(run.finished_at).toLocaleString() : run.current_stage}</strong><small>{run.stage_detail || "Report available"}</small></>}</span>
+                <StatusBadge status={run.status} />
+              </button>
+              <div className="workspace-row-actions">
+                <button className="icon-button" type="button" title="Run again" aria-label="Run again" disabled={actionRunId === run.id} onClick={() => rerun(run)}><RotateCcw size={16} /></button>
+                <button className="icon-button danger-action" type="button" title="Delete analysis" aria-label="Delete analysis" disabled={ACTIVE.has(run.status) || actionRunId === run.id} onClick={() => deleteRun(run)}><Trash2 size={16} /></button>
+              </div>
+            </article>
+          ))}
+          {!filteredRuns.length ? <div className="empty-slab"><Clock3 size={20} /> No intelligence checks yet.</div> : null}
         </div>
       </section>
 
       {authOpen ? (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="workspace-sign-in-title">
           <form className="auth-modal" onSubmit={signIn}>
-            <h2>Sign in</h2>
-            <p>Save your run history and claim any guest analyses from this browser.</p>
-            <label>
-              Email
-              <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@company.com" type="email" required />
-            </label>
-            <div className="modal-footer compact-footer">
-              <button type="button" className="secondary-button" onClick={() => setAuthOpen(false)}>Cancel</button>
-              <button className="primary-button" disabled={busy}>Continue</button>
-            </div>
+            <h2 id="workspace-sign-in-title">Save your workspace</h2>
+            <p>Claim guest analyses and keep this workspace across devices.</p>
+            <label className="field-label">Email<input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@company.com" type="email" required /></label>
+            <div className="modal-footer compact-footer"><button type="button" className="secondary-button" onClick={() => setAuthOpen(false)}>Cancel</button><button className="primary-button" disabled={busy}>Continue</button></div>
           </form>
         </div>
       ) : null}
     </main>
   );
-}
-
-function formatInr(usd: number) {
-  const inr = (usd || 0) * 100;
-  const options = inr > 0 && inr < 10 ? { minimumFractionDigits: 2, maximumFractionDigits: 2 } : { maximumFractionDigits: 0 };
-  return `INR ${inr.toLocaleString("en-IN", options)}`;
 }

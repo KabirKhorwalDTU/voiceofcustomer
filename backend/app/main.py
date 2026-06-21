@@ -18,6 +18,7 @@ from app.pipeline.worker import worker
 from app.repository import (
     can_access_run,
     claim_guest_workspace,
+    grant_legacy_kabir_workspace,
     create_run,
     delete_run_by_id,
     get_company_runs,
@@ -124,6 +125,7 @@ def login(request: AuthLoginRequest) -> AuthLoginResponse:
     with session_scope() as session:
         user = create_or_get_user(session, request.email)
         claimed_runs = claim_guest_workspace(session, clean_guest_id(request.guest_id), user.id)
+        claimed_runs += grant_legacy_kabir_workspace(session, user.id)
         token, _ = create_user_session(session, user)
         return AuthLoginResponse(user=UserOut.model_validate(user), token=token, claimed_runs=claimed_runs)
 
@@ -210,7 +212,7 @@ def run_status(
     with session_scope() as session:
         actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
         run = get_run(session, run_id)
-        if not run or not can_access_run(run, actor):
+        if not run or not can_access_run(run, actor, session):
             raise HTTPException(status_code=404, detail="run not found")
         return run_out(session, run)
 
@@ -341,7 +343,7 @@ def run_logs(
     with session_scope() as session:
         actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
         run = get_run(session, run_id)
-        if not run or not can_access_run(run, actor):
+        if not run or not can_access_run(run, actor, session):
             raise HTTPException(status_code=404, detail="run not found")
         return [RunLogOut.model_validate(row) for row in get_run_logs(session, run_id)]
 

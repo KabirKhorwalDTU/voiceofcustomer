@@ -23,6 +23,7 @@ export type Company = {
   business_type: string;
   selected_sources: string[];
   analysis_goals: string[];
+  analysis_focus?: string | null;
   maps_url?: string | null;
   instagram_url?: string | null;
   twitter_url?: string | null;
@@ -157,6 +158,7 @@ export type SubmitRunPayload = {
   business_type?: string;
   selected_sources?: string[];
   analysis_goals?: string[];
+  analysis_focus?: string;
   maps_location_hint?: string;
   maps_url?: string;
   instagram_url?: string;

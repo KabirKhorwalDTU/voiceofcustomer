@@ -1,33 +1,36 @@
-import { FormEvent, useMemo, useState } from "react";
-import { ArrowLeft, ArrowRight, Check, MapPin, Search, Sparkles } from "lucide-react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { ArrowLeft, ArrowRight, Check, MapPin, Rocket, Search, Target } from "lucide-react";
 import { api, CompanyDiscovery, SubmitRunPayload } from "../lib/api";
 
 const BUSINESS_TYPES = [
-  { id: "app", label: "App or digital service" },
-  { id: "local_business", label: "Local shop or service" },
-  { id: "creator_brand", label: "Creator or personal brand" },
-  { id: "online_business", label: "Online business or brand" },
-  { id: "other", label: "Something else" },
+  { id: "app", label: "Digital product" },
+  { id: "local_business", label: "Local business" },
+  { id: "online_business", label: "Online brand" },
+  { id: "creator_brand", label: "Creator brand" },
+  { id: "other", label: "Other" },
 ];
 
-const GOALS = [
-  "Find recurring customer problems",
-  "Understand what people love",
-  "Spot product or service requests",
-  "Track brand conversations",
+const MISSIONS = [
+  { label: "Launch prep", description: "Find friction to resolve before a release.", icon: Rocket },
+  { label: "Competitive audit", description: "Surface gaps customers compare against.", icon: Target },
+  { label: "Sentiment check", description: "Read the strongest praise and concern.", icon: Search },
 ];
+
+const QUICK_FOCUSES = ["Delivery speed", "Product quality", "Pricing", "Customer service"];
 
 type Props = {
   onStarted: (runId: string) => void;
   compact?: boolean;
+  initialName?: string;
 };
 
-export function OnboardingFlow({ onStarted, compact = false }: Props) {
+export function OnboardingFlow({ onStarted, compact = false, initialName = "" }: Props) {
   const [step, setStep] = useState<1 | 2>(1);
-  const [name, setName] = useState("");
+  const [name, setName] = useState(initialName);
   const [website, setWebsite] = useState("");
   const [businessType, setBusinessType] = useState("other");
-  const [goals, setGoals] = useState<string[]>([GOALS[0]]);
+  const [mission, setMission] = useState("Sentiment check");
+  const [focus, setFocus] = useState("");
   const [discovery, setDiscovery] = useState<CompanyDiscovery | null>(null);
   const [selectedSources, setSelectedSources] = useState<string[]>([]);
   const [playLink, setPlayLink] = useState("");
@@ -40,21 +43,28 @@ export function OnboardingFlow({ onStarted, compact = false }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
+  useEffect(() => {
+    if (initialName) setName((current) => current || initialName);
+  }, [initialName]);
+
   const catalog = discovery?.source_catalog || [];
   const needsPlayLink = selectedSources.includes("play") && !discovery?.play_id;
   const needsAppStoreLink = selectedSources.includes("appstore") && !discovery?.app_id;
-
   const selectedLabels = useMemo(
     () => catalog.filter((source) => selectedSources.includes(source.id)).map((source) => source.label),
     [catalog, selectedSources],
   );
 
-  function toggle(items: string[], value: string, setter: (next: string[]) => void) {
-    setter(items.includes(value) ? items.filter((item) => item !== value) : [...items, value]);
+  function resetDiscovery() {
+    setDiscovery(null);
+    setSelectedSources([]);
   }
 
-  async function continueToSources(event: FormEvent) {
-    event.preventDefault();
+  function toggleSource(id: string) {
+    setSelectedSources((current) => current.includes(id) ? current.filter((source) => source !== id) : [...current, id]);
+  }
+
+  async function discoverBusiness() {
     if (!name.trim()) return;
     setBusy(true);
     setError("");
@@ -63,18 +73,30 @@ export function OnboardingFlow({ onStarted, compact = false }: Props) {
       setDiscovery(result);
       setBusinessType(result.business_type);
       setSelectedSources(result.recommended_sources);
-      setStep(2);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "We could not look up this business.");
+      setError(err instanceof Error ? err.message : "We could not find this business.");
     } finally {
       setBusy(false);
     }
   }
 
+  async function advanceFromDetails(event: FormEvent) {
+    event.preventDefault();
+    if (!discovery) {
+      await discoverBusiness();
+      return;
+    }
+    if (!selectedSources.length) {
+      setError("Choose at least one source to continue.");
+      return;
+    }
+    setStep(2);
+  }
+
   async function startAnalysis(event: FormEvent) {
     event.preventDefault();
     if (!discovery || !selectedSources.length) {
-      setError("Pick at least one place to listen for customers.");
+      setError("Choose at least one source to continue.");
       return;
     }
     setBusy(true);
@@ -87,7 +109,8 @@ export function OnboardingFlow({ onStarted, compact = false }: Props) {
         app_store_link: appStoreLink.trim(),
         business_type: businessType,
         selected_sources: selectedSources,
-        analysis_goals: goals,
+        analysis_goals: [mission],
+        analysis_focus: focus.trim(),
         maps_location_hint: mapsLocationHint.trim() || "India",
         maps_url: mapsUrl.trim(),
         instagram_url: instagramUrl.trim(),
@@ -97,113 +120,121 @@ export function OnboardingFlow({ onStarted, compact = false }: Props) {
       const response = await api.submitRun(payload);
       onStarted(response.run.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not start analysis.");
+      setError(err instanceof Error ? err.message : "Could not start the analysis.");
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <section className={`guided-onboarding ${compact ? "guided-onboarding-compact" : ""}`} aria-label="Start an analysis">
-      <div className="onboarding-progress" aria-label={`Step ${step} of 2`}>
-        <span className={step === 1 ? "active" : "done"}>1</span>
+    <section className={"onboarding-flow " + (compact ? "onboarding-flow-compact" : "")} aria-label="Set up an analysis">
+      <div className="setup-progress" aria-label={"Step " + step + " of 2"}>
+        <span className={step === 1 ? "active" : "complete"}>01</span>
         <i />
-        <span className={step === 2 ? "active" : ""}>2</span>
+        <span className={step === 2 ? "active" : ""}>02</span>
       </div>
 
       {step === 1 ? (
-        <form className="onboarding-form" onSubmit={continueToSources}>
-          <div className="onboarding-heading">
-            <span className="eyebrow"><Sparkles size={14} /> Start with the basics</span>
+        <form className="setup-form" onSubmit={advanceFromDetails}>
+          <div className="setup-copy">
+            <p className="section-marker">Step 1 of 2</p>
             <h2>Tell us about the business.</h2>
-            <p>We will find the public places customers are already talking. A website helps, but is not required.</p>
+            <p>Start with the public footprint, then choose the places worth listening to.</p>
           </div>
-          <div className="onboarding-fields two-up">
-            <label>
+
+          <div className="business-details">
+            <label className="field-label field-label-wide">
               Business name
-              <input value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g., Riya's Bakery" autoComplete="organization" required />
+              <span className="input-with-icon">
+                <Search size={18} />
+                <input value={name} onChange={(event) => { setName(event.target.value); resetDiscovery(); }} placeholder="Enter a business name, address, or domain" autoComplete="organization" required />
+              </span>
             </label>
-            <label>
+            <label className="field-label">
               Website <small>Optional</small>
-              <input value={website} onChange={(event) => setWebsite(event.target.value)} placeholder="riyasbakery.in" inputMode="url" />
+              <input value={website} onChange={(event) => { setWebsite(event.target.value); resetDiscovery(); }} placeholder="yourbusiness.com" inputMode="url" />
+            </label>
+            <label className="field-label">
+              Business type
+              <select value={businessType} onChange={(event) => { setBusinessType(event.target.value); resetDiscovery(); }}>
+                {BUSINESS_TYPES.map((type) => <option value={type.id} key={type.id}>{type.label}</option>)}
+              </select>
             </label>
           </div>
-          <fieldset className="choice-fieldset">
-            <legend>What kind of business is this?</legend>
-            <div className="choice-grid business-choice-grid">
-              {BUSINESS_TYPES.map((type) => (
-                <button className={businessType === type.id ? "choice-chip selected" : "choice-chip"} type="button" onClick={() => setBusinessType(type.id)} key={type.id}>
-                  {type.label}
-                </button>
-              ))}
+
+          {discovery ? (
+            <div className="source-setup">
+              <div className="entity-match">
+                <span className="company-monogram">{discovery.icon_text}</span>
+                <div><strong>{discovery.name}</strong><small>{discovery.domain || "Public business match"}</small></div>
+                <span className="verified-label">Verified entity</span>
+              </div>
+              <div className="source-setup-heading">
+                <div><p className="section-marker">Source details</p><h3>Select the feedback streams.</h3></div>
+                <span>{selectedSources.length} selected</span>
+              </div>
+              <div className="source-choice-grid">
+                {catalog.map((source) => {
+                  const selected = selectedSources.includes(source.id);
+                  const recommended = discovery.recommended_sources.includes(source.id);
+                  return (
+                    <button className={"source-choice " + (selected ? "selected" : "")} type="button" onClick={() => toggleSource(source.id)} key={source.id} aria-pressed={selected}>
+                      <span className="source-choice-marker">{selected ? <Check size={14} /> : null}</span>
+                      <span><strong>{source.label}</strong><small>{source.short_description}</small></span>
+                      {recommended ? <em>Recommended</em> : null}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="source-followups">
+                <div className="followup-heading"><MapPin size={17} /><strong>Matching details</strong></div>
+                {needsPlayLink ? <label className="field-label">Google Play link <input value={playLink} onChange={(event) => setPlayLink(event.target.value)} placeholder="play.google.com/store/apps/..." /></label> : null}
+                {needsAppStoreLink ? <label className="field-label">App Store link <input value={appStoreLink} onChange={(event) => setAppStoreLink(event.target.value)} placeholder="apps.apple.com/..." /></label> : null}
+                {selectedSources.includes("maps") ? <div className="two-field-row"><label className="field-label">Google Maps link <input value={mapsUrl} onChange={(event) => setMapsUrl(event.target.value)} placeholder="Google Maps business link" /></label><label className="field-label">City or area <input value={mapsLocationHint} onChange={(event) => setMapsLocationHint(event.target.value)} placeholder="e.g. Indiranagar, Bengaluru" /></label></div> : null}
+                {selectedSources.includes("instagram") ? <label className="field-label">Instagram profile or post <input value={instagramUrl} onChange={(event) => setInstagramUrl(event.target.value)} placeholder="instagram.com/yourbusiness" /></label> : null}
+                {selectedSources.includes("twitter") ? <label className="field-label">X profile <input value={twitterUrl} onChange={(event) => setTwitterUrl(event.target.value)} placeholder="x.com/yourbusiness" /></label> : null}
+                {selectedSources.includes("mouthshut") ? <label className="field-label">MouthShut review page <input value={mouthshutUrl} onChange={(event) => setMouthshutUrl(event.target.value)} placeholder="mouthshut.com/product-reviews/..." /></label> : null}
+              </div>
             </div>
-          </fieldset>
-          <fieldset className="choice-fieldset">
-            <legend>What would be most useful?</legend>
-            <div className="choice-grid goal-choice-grid">
-              {GOALS.map((goal) => (
-                <button className={goals.includes(goal) ? "choice-chip selected" : "choice-chip"} type="button" onClick={() => toggle(goals, goal, setGoals)} key={goal}>
-                  {goals.includes(goal) ? <Check size={14} /> : null}
-                  {goal}
-                </button>
-              ))}
-            </div>
-          </fieldset>
-          <div className="onboarding-actions">
-            <button className="primary-button" disabled={busy}>
-              {busy ? "Looking it up..." : "Find customer sources"}
-              <ArrowRight size={17} />
-            </button>
+          ) : (
+            <div className="discovery-note"><span>01</span><p>We will match the business and recommend its likely review, map, app, and conversation sources.</p></div>
+          )}
+
+          <div className="setup-actions">
+            <span>{discovery ? "Usually a few minutes, depending on selected sources." : "Business match only. No scan yet."}</span>
+            <button className="primary-button" disabled={busy}>{busy ? "Finding sources..." : discovery ? "Next: choose the mission" : "Find customer sources"}<ArrowRight size={17} /></button>
           </div>
         </form>
       ) : (
-        <form className="onboarding-form" onSubmit={startAnalysis}>
-          <div className="business-match-row">
-            <span className="company-monogram">{discovery?.icon_text}</span>
+        <form className="setup-form mission-form" onSubmit={startAnalysis}>
+          <div className="setup-copy">
+            <p className="section-marker">Step 2 of 2</p>
+            <h2>What should it listen for?</h2>
+            <p>Choose the lens for this run, then add a specific concern or opportunity.</p>
+          </div>
+          <div className="mission-layout">
             <div>
-              <strong>{discovery?.name}</strong>
-              <small>{discovery?.domain || "We will use the business name to search"}</small>
+              <fieldset className="mission-fieldset">
+                <legend>Mission focus</legend>
+                <div className="mission-grid">
+                  {MISSIONS.map(({ label, description, icon: Icon }) => (
+                    <button className={"mission-option " + (mission === label ? "selected" : "")} type="button" onClick={() => setMission(label)} aria-pressed={mission === label} key={label}>
+                      <Icon size={20} /><span><strong>{label}</strong><small>{description}</small></span>
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+              <label className="field-label focus-field">What else should we focus on?<textarea value={focus} onChange={(event) => setFocus(event.target.value)} placeholder="e.g. recent delivery delays, staff behavior, or pricing changes" rows={5} /></label>
+              <div className="quick-focuses">{QUICK_FOCUSES.map((item) => <button type="button" className="quick-focus" onClick={() => setFocus((current) => current ? current + "; " + item : item)} key={item}>{item}</button>)}</div>
             </div>
-            <button className="text-button" type="button" onClick={() => setStep(1)}>Edit</button>
+            <aside className="mission-context">
+              <p className="section-marker">Target acquired</p>
+              <div className="entity-match"><span className="company-monogram">{discovery?.icon_text}</span><div><strong>{discovery?.name}</strong><small>{discovery?.domain || "Public business match"}</small></div></div>
+              <dl><div><dt>Sources</dt><dd>{selectedLabels.join(", ") || "Selected sources"}</dd></div><div><dt>Mission</dt><dd>{mission}</dd></div><div><dt>Region</dt><dd>{mapsLocationHint || "India"}</dd></div></dl>
+            </aside>
           </div>
-          <div className="onboarding-heading compact-heading">
-            <span className="eyebrow"><Search size={14} /> Recommended listening posts</span>
-            <h2>We picked a sensible starting set.</h2>
-            <p>Tap anything to include or remove it. We only run the sources you leave selected.</p>
-          </div>
-          <div className="source-choice-grid">
-            {catalog.map((source) => {
-              const selected = selectedSources.includes(source.id);
-              const recommended = discovery?.recommended_sources.includes(source.id);
-              return (
-                <button className={selected ? "source-choice selected" : "source-choice"} type="button" onClick={() => toggle(selectedSources, source.id, setSelectedSources)} key={source.id}>
-                  <span className="source-choice-marker">{selected ? <Check size={15} /> : null}</span>
-                  <span>
-                    <strong>{source.label}</strong>
-                    <small>{source.short_description}</small>
-                  </span>
-                  <em>{recommended ? "Recommended" : `Up to ${source.cap.toLocaleString()} items`}</em>
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="identity-followups">
-            <div className="followup-heading">
-              <MapPin size={17} />
-              <div><strong>Help us match the right pages</strong><small>Only complete the fields for sources you selected. Everything here is optional, but improves accuracy.</small></div>
-            </div>
-            {needsPlayLink ? <label>Google Play link <input value={playLink} onChange={(event) => setPlayLink(event.target.value)} placeholder="play.google.com/store/apps/details?id=..." /></label> : null}
-            {needsAppStoreLink ? <label>App Store link <input value={appStoreLink} onChange={(event) => setAppStoreLink(event.target.value)} placeholder="apps.apple.com/..." /></label> : null}
-            {selectedSources.includes("maps") ? <div className="onboarding-fields two-up"><label>Google Maps link <small>Optional</small><input value={mapsUrl} onChange={(event) => setMapsUrl(event.target.value)} placeholder="Google Maps business link" /></label><label>City or area <small>Optional</small><input value={mapsLocationHint} onChange={(event) => setMapsLocationHint(event.target.value)} placeholder="e.g., Indiranagar, Bengaluru" /></label></div> : null}
-            {selectedSources.includes("instagram") ? <label>Instagram profile or recent post/reel link <small>Optional - a post/reel link lets us include its comments</small><input value={instagramUrl} onChange={(event) => setInstagramUrl(event.target.value)} placeholder="instagram.com/yourbusiness or instagram.com/p/..." /></label> : null}
-            {selectedSources.includes("twitter") ? <label>X / Twitter profile link <small>Optional - helps us collect replies to your account</small><input value={twitterUrl} onChange={(event) => setTwitterUrl(event.target.value)} placeholder="x.com/yourbusiness" /></label> : null}
-            {selectedSources.includes("mouthshut") ? <label>MouthShut review-page link <small>Required for this source</small><input value={mouthshutUrl} onChange={(event) => setMouthshutUrl(event.target.value)} placeholder="mouthshut.com/product-reviews/..." /></label> : null}
-          </div>
-          <div className="onboarding-actions split-actions">
-            <button type="button" className="secondary-button" onClick={() => setStep(1)}><ArrowLeft size={17} /> Back</button>
-            <div><small>{selectedLabels.join(" · ")}</small><button className="primary-button" disabled={busy || !selectedSources.length}>{busy ? "Starting..." : "Start analysis"}<ArrowRight size={17} /></button></div>
-          </div>
+          <div className="setup-actions split-actions"><button type="button" className="secondary-button" onClick={() => setStep(1)}><ArrowLeft size={17} /> Back</button><button className="primary-button" disabled={busy}>{busy ? "Starting analysis..." : "Generate insights"}<ArrowRight size={17} /></button></div>
         </form>
       )}
       {error ? <p className="error onboarding-error">{error}</p> : null}

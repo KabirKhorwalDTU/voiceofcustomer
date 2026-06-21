@@ -34,6 +34,7 @@ class SubmitRunRequest(BaseModel):
     business_type: str = "other"
     selected_sources: List[str] = Field(default_factory=list)
     analysis_goals: List[str] = Field(default_factory=list)
+    analysis_focus: str = Field(default="", max_length=600)
     maps_enabled: bool = False
     maps_location_hint: str = "India"
     reddit_enabled: bool = False
@@ -74,6 +75,7 @@ class CompanyOut(BaseModel):
     business_type: str = "other"
     selected_sources: List[str] = Field(default_factory=list)
     analysis_goals: List[str] = Field(default_factory=list)
+    analysis_focus: Optional[str] = None
     maps_url: Optional[str] = None
     instagram_url: Optional[str] = None
     twitter_url: Optional[str] = None
@@ -94,6 +96,7 @@ class RunOut(BaseModel):
     budget_cap: float
     dedup_ratio: float
     quarantine_rate: float
+    insight_summary: Dict[str, Any] = Field(default_factory=dict)
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     error: Optional[str] = None
