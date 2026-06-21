@@ -3,12 +3,14 @@ import { Dashboard } from "./pages/Dashboard";
 import { LandingPage } from "./pages/LandingPage";
 import { ProductWorkspace } from "./pages/ProductWorkspace";
 import { ResultsPage } from "./pages/ResultsPage";
+import { SampleReportPage } from "./pages/SampleReportPage";
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<LandingPage />} />
+        <Route path="/sample/first-club" element={<SampleReportPage />} />
         <Route path="/app" element={<ProductWorkspace />} />
         <Route path="/app/runs/:runId" element={<ResultsPage />} />
         <Route path="/kabir" element={<Dashboard />} />

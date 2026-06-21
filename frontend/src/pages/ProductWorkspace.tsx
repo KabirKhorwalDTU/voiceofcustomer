@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowRight, Clock3, LockKeyhole, RotateCcw, Search, Trash2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Clock3, LoaderCircle, LockKeyhole, RotateCcw, Search, Trash2 } from "lucide-react";
 import { api, AuthUser, getAuthUser, Run } from "../lib/api";
 import { OnboardingFlow } from "../components/OnboardingFlow";
 import { StatusBadge } from "../components/StatusBadge";
@@ -19,13 +19,20 @@ export function ProductWorkspace() {
   const [busy, setBusy] = useState(false);
   const [actionRunId, setActionRunId] = useState("");
   const [error, setError] = useState("");
+  const [initialLoading, setInitialLoading] = useState(true);
 
   async function loadRuns() {
-    const next = await api.runs();
-    setRuns(next);
+    try {
+      const next = await api.runs();
+      setRuns(next);
+      setError("");
+    } finally {
+      setInitialLoading(false);
+    }
   }
 
   useEffect(() => {
+    setInitialLoading(true);
     loadRuns().catch((err) => setError(err.message));
     const interval = window.setInterval(() => loadRuns().catch(() => undefined), 5000);
     return () => window.clearInterval(interval);
@@ -103,21 +110,23 @@ export function ProductWorkspace() {
       </header>
 
       <section className="workspace-title">
-        <div><p className="section-marker">Workspace</p><h1>Your customer intelligence.</h1><p>{user ? "Saved runs for " + user.email + "." : "Guest runs stay in this browser until you sign in."}</p></div>
-        <button className="primary-button" type="button" onClick={() => setSetupOpen((current) => !current)}>{setupOpen ? "Close setup" : "Start a new check"} <ArrowRight size={17} /></button>
+        <div>
+          <p className="section-marker">{setupOpen ? "New analysis" : "Workspace"}</p>
+          <h1>{setupOpen ? "Tell us where to listen." : "Your customer intelligence."}</h1>
+          <p>{setupOpen ? "Choose the public feedback sources before the analysis begins." : user ? "Saved runs for " + user.email + "." : "Guest runs stay in this browser until you sign in."}</p>
+        </div>
+        {setupOpen ? <Link className="secondary-button" to="/app"><ArrowLeft size={17} /> Back to workspace</Link> : <button className="primary-button" type="button" onClick={() => setSetupOpen(true)}>Start a new check <ArrowRight size={17} /></button>}
       </section>
 
       {error ? <section className="banner danger workspace-alert">{error}</section> : null}
-      {setupOpen ? <section className="workspace-setup"><OnboardingFlow compact initialName={searchParams.get("business") || ""} onStarted={async (runId) => { await loadRuns(); navigate("/app/runs/" + runId); }} /></section> : null}
-
-      <section className="workspace-list-section">
+      {setupOpen ? <section className="workspace-setup"><OnboardingFlow compact initialName={searchParams.get("business") || ""} onStarted={(runId) => navigate("/app/runs/" + runId)} /></section> : <section className="workspace-list-section">
         <div className="workspace-list-toolbar">
-          <div><h2>All intelligence checks</h2><p>{filteredRuns.length} analyses, including live work and completed reports.</p></div>
+          <div><h2>All intelligence checks</h2><p>{initialLoading ? "Loading saved analyses…" : filteredRuns.length + " analyses, including live work and completed reports."}</p></div>
           <label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search business, stage, or status" /></label>
         </div>
         <div className="workspace-list">
           <div className="workspace-list-head" aria-hidden="true"><span>Business entity</span><span>Latest activity</span><span>Status</span><span>Actions</span></div>
-          {filteredRuns.map((run) => (
+          {initialLoading ? <div className="workspace-loading"><LoaderCircle size={20} className="spin" /><div><strong>Loading your intelligence checks</strong><span>Bringing your saved reports into the workspace.</span></div></div> : filteredRuns.map((run) => (
             <article className={"workspace-run " + (ACTIVE.has(run.status) ? "is-active" : "")} key={run.id}>
               <button className="workspace-run-main" type="button" onClick={() => navigate("/app/runs/" + run.id)}>
                 <span className="workspace-company"><i>{(run.company?.name || run.company_id).slice(0, 1).toUpperCase()}</i><span><strong>{run.company?.name || run.company_id}</strong><small>{run.company?.domain || run.model_used || "Customer feedback analysis"}</small></span></span>
@@ -130,9 +139,9 @@ export function ProductWorkspace() {
               </div>
             </article>
           ))}
-          {!filteredRuns.length ? <div className="empty-slab"><Clock3 size={20} /> No intelligence checks yet.</div> : null}
+          {!initialLoading && !filteredRuns.length ? <div className="empty-slab"><Clock3 size={20} /> No intelligence checks yet.</div> : null}
         </div>
-      </section>
+      </section>}
 
       {authOpen ? (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="workspace-sign-in-title">

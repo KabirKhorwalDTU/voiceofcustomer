@@ -170,8 +170,8 @@ export function OnboardingFlow({ onStarted, compact = false, initialName = "" }:
                 <span className="verified-label">Verified entity</span>
               </div>
               <div className="source-setup-heading">
-                <div><p className="section-marker">Source details</p><h3>Select the feedback streams.</h3></div>
-                <span>{selectedSources.length} selected</span>
+                <div><p className="section-marker">Source selection</p><h3>Choose where to listen.</h3><p>All available public sources are listed below. We preselect the sensible starting set for this business.</p></div>
+                <span>{selectedSources.length} of {catalog.length} selected</span>
               </div>
               <div className="source-choice-grid">
                 {catalog.map((source) => {
@@ -180,7 +180,7 @@ export function OnboardingFlow({ onStarted, compact = false, initialName = "" }:
                   return (
                     <button className={"source-choice " + (selected ? "selected" : "")} type="button" onClick={() => toggleSource(source.id)} key={source.id} aria-pressed={selected}>
                       <span className="source-choice-marker">{selected ? <Check size={14} /> : null}</span>
-                      <span><strong>{source.label}</strong><small>{source.short_description}</small></span>
+                      <span><strong>{source.label}</strong><small>{source.short_description} · up to {source.cap.toLocaleString("en-IN")} items</small></span>
                       {recommended ? <em>Recommended</em> : null}
                     </button>
                   );

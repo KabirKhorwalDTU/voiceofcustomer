@@ -4,10 +4,13 @@ import { ArrowRight, BarChart3, LockKeyhole, MapPin, MessageSquareText, Search, 
 import { api, AuthUser, getAuthUser } from "../lib/api";
 
 const SOURCES = [
-  { label: "Google Maps", note: "Location reviews and ratings", icon: MapPin },
-  { label: "App stores", note: "Product feedback and ratings", icon: Smartphone },
-  { label: "Conversations", note: "Forums and social mentions", icon: MessageSquareText },
-  { label: "Review sites", note: "Independent customer accounts", icon: BarChart3 },
+  { label: "Google Play", note: "Recent 1-3 star Android reviews", icon: Smartphone },
+  { label: "App Store", note: "Recent 1-3 star iPhone reviews", icon: Smartphone },
+  { label: "Google Maps", note: "Low-rated reviews from India places", icon: MapPin },
+  { label: "Instagram", note: "Brand comments and public mentions", icon: MessageSquareText },
+  { label: "X / Twitter", note: "Public posts, replies, and mentions", icon: MessageSquareText },
+  { label: "Reddit", note: "Public customer discussions", icon: MessageSquareText },
+  { label: "MouthShut", note: "India consumer reviews", icon: BarChart3 },
 ];
 
 export function LandingPage() {
@@ -59,8 +62,8 @@ export function LandingPage() {
               <span className="live-label">Live</span>
             </div>
             <div className="check-list">
-              <article className="check-row"><div><strong>Harbor &amp; Hearth</strong><p>Delivery delays are concentrating in late-evening orders.</p></div><span className="tag tag-risk">Operations risk</span></article>
-              <article className="check-row"><div><strong>Northstar Mobile</strong><p>New onboarding is earning stronger first-week feedback.</p></div><span className="tag tag-good">Product quality</span></article>
+              <article className="check-row"><div><strong>First Club</strong><p>Availability and delivery reliability are the most repeated grocery-app concerns.</p></div><span className="tag tag-risk">Fulfilment risk</span></article>
+              <article className="check-row"><div><strong>Swiggy</strong><p>Peak-hour delivery experience is driving the sharpest customer feedback.</p></div><span className="tag tag-good">Service signal</span></article>
             </div>
           </section>
         </div>
@@ -73,22 +76,22 @@ export function LandingPage() {
             </div>
           </section>
           <section className="sample-cta">
-            <h2>Your insight package</h2>
-            <p>A local, illustrative report you can explore before connecting a business.</p>
-            <button className="sample-report-button" type="button" onClick={() => document.getElementById("sample-report")?.scrollIntoView({ behavior: "smooth", block: "start" })}>View sample report <ArrowRight size={18} /></button>
+            <h2>Explore a full report</h2>
+            <p>See how First Club's public grocery-app feedback becomes themes, evidence, and next actions.</p>
+            <button className="sample-report-button" type="button" onClick={() => navigate("/sample/first-club")}>Open First Club sample <ArrowRight size={18} /></button>
           </section>
           <blockquote className="field-note">“The work begins with what people are already saying, not a blank survey.”</blockquote>
         </aside>
       </section>
 
       <section className="sample-report" id="sample-report">
-        <div className="sample-report-intro"><p className="section-marker">Sample report</p><h2>Turn customer feedback into a decision-ready brief.</h2><p>This example uses no customer data and never calls the analysis API.</p></div>
+        <div className="sample-report-intro"><p className="section-marker">Complete sample report</p><h2>First Club: grocery feedback, made actionable.</h2><p>An India-focused illustrative report. It uses no customer data and never calls the analysis API.</p><button className="secondary-button" type="button" onClick={() => navigate("/sample/first-club")}>View the full report <ArrowRight size={16} /></button></div>
         <div className="sample-report-grid">
-          <section className="sample-score"><span>Business health</span><strong>72</strong><small>/ 100</small><div className="score-bars"><i style={{ width: "72%" }} /><i style={{ width: "58%" }} /><i style={{ width: "83%" }} /></div></section>
-          <section className="sample-pulse"><span className="tag tag-good">Trending positive</span><h3>Strong product value, with a service recovery gap.</h3><p>Customers value the offering, but repeated delays and unclear status updates are eroding trust during peak hours.</p><div><span>1,248 feedback items</span><span>4.2 average rating</span><span>92% response rate</span></div></section>
+          <section className="sample-score"><span>Customer feedback risk</span><strong>74</strong><small>/ 100</small><div className="score-bars"><i style={{ width: "74%" }} /><i style={{ width: "61%" }} /><i style={{ width: "48%" }} /></div></section>
+          <section className="sample-pulse"><span className="tag tag-risk">Priority signal</span><h3>Availability and delivery reliability need attention.</h3><p>First Club customers are clear on the pattern: unavailable items, late delivery, and product-quality misses compound into a trust problem.</p><div><span>1,098 selected reviews</span><span>Google Play + App Store</span><span>Bengaluru grocery context</span></div></section>
         </div>
         <div className="sample-themes">
-          {[["Delivery delay", "210 mentions", "45%", "risk"], ["Taste & quality", "385 mentions", "74%", "good"], ["Pricing clarity", "150 mentions", "31%", "purple"]].map(([label, amount, width, kind]) => <div className="sample-theme" key={label}><span>{label}</span><div><i className={kind} style={{ width }} /></div><small>{amount}</small></div>)}
+          {[["Delivery & fulfilment", "192 mentions", "72%", "risk"], ["Service availability", "219 mentions", "82%", "good"], ["Product quality", "150 mentions", "56%", "purple"]].map(([label, amount, width, kind]) => <div className="sample-theme" key={label}><span>{label}</span><div><i className={kind} style={{ width }} /></div><small>{amount}</small></div>)}
         </div>
       </section>
 

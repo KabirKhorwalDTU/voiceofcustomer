@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { Activity, ArrowLeft, ChevronDown, ChevronRight, Download, Printer, Radar, RotateCcw } from "lucide-react";
+import { Activity, ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, Clock3, Download, ListChecks, Printer, Radar, RotateCcw } from "lucide-react";
 import { ResultsCharts } from "../components/Charts";
 import { StatusBadge } from "../components/StatusBadge";
 import { api, Results, ReviewPage, RunLog } from "../lib/api";
@@ -48,6 +48,7 @@ export function ResultsPage() {
   const [pageSize, setPageSize] = useState(50);
   const [rerunning, setRerunning] = useState(false);
   const [error, setError] = useState("");
+  const [initialLoading, setInitialLoading] = useState(true);
 
   async function loadResults() {
     if (!runId) return;
@@ -62,7 +63,13 @@ export function ResultsPage() {
   }
 
   useEffect(() => {
-    loadResults().catch((err) => setError(err.message));
+    setResults(null);
+    setReviewPage(null);
+    setError("");
+    setInitialLoading(true);
+    loadResults()
+      .catch((err) => setError(err.message))
+      .finally(() => setInitialLoading(false));
   }, [runId]);
 
   useEffect(() => {
@@ -91,7 +98,6 @@ export function ResultsPage() {
 
   const completeness = Object.entries(results?.run.completeness || {}) as Array<[string, { status: string; count?: number; error?: string; reason?: string }]>;
   const incomplete = completeness.filter(([, value]) => !["ok", "disabled"].includes(value.status));
-  const disabled = completeness.filter(([, value]) => value.status === "disabled");
   const otherShare = Number(results?.summary.other_share || 0);
   const lowConfidence = Boolean(results && (results.run.quarantine_rate > 0.2 || results.summary.low_confidence));
 
@@ -115,6 +121,11 @@ export function ResultsPage() {
   const feedbackRiskScore = Number(feedbackRisk.score || 0);
   const recommendedActions = Array.isArray(insightSummary.recommended_actions) ? insightSummary.recommended_actions as Array<Record<string, unknown>> : [];
   const firstAction = recommendedActions[0] || {};
+  const selectedSources = (results?.company.selected_sources || []).map(formatSource);
+  const usedSources = Object.entries(results?.summary.source_mix || {})
+    .filter(([, count]) => Number(count) > 0)
+    .map(([source]) => formatSource(source));
+  const reportSources = usedSources.length ? usedSources : selectedSources;
   function updateFilter(key: keyof ReviewFilters, value: string) {
     setPage(1);
     setFilters((current) => ({ ...current, [key]: value }));
@@ -155,24 +166,24 @@ export function ResultsPage() {
     }
   }
 
-  if (error) {
-    return <main className="app-shell"><p className="error">{error}</p></main>;
+  if (error && !results) {
+    return <main className="app-shell run-state-shell"><section className="run-state-card"><p className="section-marker">Analysis unavailable</p><h1>We could not load this report.</h1><p>{error}</p><button className="primary-button" type="button" onClick={() => { setError(""); setInitialLoading(true); loadResults().catch((err) => setError(err.message)).finally(() => setInitialLoading(false)); }}>Try again</button></section></main>;
   }
 
   if (!results) {
-    return <main className="app-shell"><div className="empty-slab">Loading run...</div></main>;
+    return <RunLoadingState loading={initialLoading} />;
   }
 
   if (ACTIVE.has(results.run.status)) {
-    const liveStepIndex = ANALYST_STEPS.findIndex((step) => results.run.current_stage.toLowerCase().includes(step.stage.replace("_", " ")) || results.run.stage_detail.toLowerCase().includes(step.stage.replace("_", " ")));
-    const currentIndex = liveStepIndex >= 0 ? liveStepIndex : Math.min(ANALYST_STEPS.length - 1, Math.floor((results.run.progress || 0) * ANALYST_STEPS.length));
+    const currentIndex = analystStepIndex(results.run.current_stage, results.run.stage_detail, results.run.progress);
+    const nextStep = ANALYST_STEPS[Math.min(ANALYST_STEPS.length - 1, currentIndex + 1)];
+    const liveSources = reportSources.length ? reportSources : ["the selected public feedback sources"];
     return (
       <main className="app-shell analyst-page">
         <header className="editorial-app-header report-header">
           <Link to="/" className="brand-lockup"><span>VOC</span>Voice of Customer</Link>
           <div className="report-header-meta">
             <StatusBadge status={results.run.status} />
-            <button className="secondary-button" onClick={rerunCurrent} disabled={rerunning}><RotateCcw size={16} /> Run again</button>
             <Link to={inProductWorkspace ? "/app" : "/kabir"} className="icon-button" title="Back to workspace" aria-label="Back to workspace"><ArrowLeft size={18} /></Link>
           </div>
         </header>
@@ -180,7 +191,7 @@ export function ResultsPage() {
           <div className="analyst-main">
             <p className="section-marker">Live analysis</p>
             <h1>The analyst is at work.</h1>
-            <p>Reading and structuring the feedback streams for {results.company.name}. The report will appear here as soon as the first signals are ready.</p>
+            <p>We are turning {liveSources.join(", ")} into a usable customer feedback report for {results.company.name}. You can leave this page safely; it updates from the live worker state.</p>
             <div className="live-progress">
               <div><span>Analyzing feedback data</span><strong>{Math.round((results.run.progress || 0) * 100)}%</strong></div>
               <i><b style={{ width: Math.max(3, Math.round((results.run.progress || 0) * 100)) + "%" }} /></i>
@@ -194,10 +205,10 @@ export function ResultsPage() {
                 </div>
               ))}
             </div>
-            <p className="analyst-timing">Timing follows the selected sources and Gemini Batch queue. This screen updates from real worker events; it never invents progress.</p>
+            <div className="analyst-next-step"><Clock3 size={18} /><div><span>Coming next</span><strong>{nextStep.label}</strong><p>Batch classification can take a little longer after source collection. The report appears automatically when this pass is complete.</p></div></div>
           </div>
           <aside className="preliminary-signals">
-            <div className="signal-heading"><Radar size={20} /><h2>Preliminary signals</h2></div>
+            <div className="signal-heading"><Radar size={20} /><h2>What your report will include</h2></div>
             {results.themes.slice(0, 2).map((theme, index) => (
               <article className="signal-card" key={theme.id}>
                 <span className={index === 0 ? "tag tag-good" : "tag tag-purple"}>{index === 0 ? "Emerging" : "Notable"}</span>
@@ -205,8 +216,8 @@ export function ResultsPage() {
                 <p>Detected in the feedback processed so far.</p>
               </article>
             ))}
-            {!results.themes.length ? <div className="pending-signal"><Activity size={18} /> Source reads are in progress.</div> : null}
-            <p>Early indicators only. The full report is still compiling.</p>
+            {!results.themes.length ? <div className="analyst-deliverables"><div><ListChecks size={17} /><span><strong>Issue map</strong><small>Clear L1 themes and L2 sub-issues.</small></span></div><div><Activity size={17} /><span><strong>Evidence</strong><small>Representative customer voices behind each signal.</small></span></div><div><CheckCircle2 size={17} /><span><strong>Next actions</strong><small>Mission-aware actions grounded in the feedback.</small></span></div></div> : null}
+            <p>Early indicators appear only once there is real classified feedback. Until then, we show the work in progress, not invented insights.</p>
           </aside>
         </section>
       </main>
@@ -238,35 +249,23 @@ export function ResultsPage() {
       <section className="report-masthead">
         <div>
           <p className="section-marker">Customer intelligence report</p>
-          <h1>Drive growth through customer insight.</h1>
-          <p>Evidence from {results.company.name}'s selected feedback streams, organized into the decisions that deserve attention now.</p>
+          <h1>{results.company.name}: customer feedback report.</h1>
+          <p>Evidence from {reportSources.join(", ") || "the selected public feedback sources"}, organized into the decisions that deserve attention now.</p>
         </div>
-        <div className="report-masthead-status"><strong>{results.run.current_stage}</strong><span>{Math.round((results.run.progress || 0) * 100)}% complete</span></div>
-      </section>
-
-      <section className="run-progress-panel">
-        <div>
-          <strong>{results.run.current_stage}</strong>
-          <span>{Math.round((results.run.progress || 0) * 100)}% complete</span>
-        </div>
-        <div className="progress-track large">
-          <span style={{ width: `${Math.max(3, Math.round((results.run.progress || 0) * 100))}%` }} />
-        </div>
+        <div className="report-masthead-status"><strong>{results.run.status === "partial" ? "Partial report" : "Report ready"}</strong><span>{reportSources.length || 0} source{reportSources.length === 1 ? "" : "s"} used · {results.summary.total_reviews || 0} reviews</span></div>
       </section>
 
       {incomplete.length ? (
-        <section className="banner warning">
+        <section className="banner warning report-notice">
           Partial data: {incomplete.map(([source, value]) => `${source} ${value.status}`).join(", ")}
         </section>
-      ) : (
-        <section className="banner ok">All configured sources completed.</section>
-      )}
-      {disabled.length ? <section className="banner muted-banner">Disabled sources: {disabled.map(([source]) => source).join(", ")}</section> : null}
+      ) : null}
       {lowConfidence ? (
-        <section className="banner danger">
+        <section className="banner danger report-notice">
           Low confidence: quarantine {Math.round(results.run.quarantine_rate * 100)}%, L1 other {Math.round(otherShare * 100)}%.
         </section>
       ) : null}
+      {error ? <section className="banner danger report-notice">{error}</section> : null}
 
       <section className="executive-summary">
         <div className="health-score">
@@ -307,21 +306,21 @@ export function ResultsPage() {
       </section>
 
       <section className="stats-grid results-stats">
-        <Metric label="Selected reviews" value={String(results.summary.total_reviews || 0)} note="1/2/3-star rated sources, plus Reddit only if enabled" />
-        <Metric label="Date range" value={`${results.summary.date_range?.start || "n/a"} to ${results.summary.date_range?.end || "n/a"}`} />
-        <Metric label="Tracked cost" value={`${formatInr(trackedCost)} / ${formatInr(results.run.budget_cap)}`} note={`Gemini ${formatInr(geminiUsage.cost)} · Apify ${formatInr(apifyUsage.cost)}`} />
-        <Metric label="Gemini tokens" value={geminiUsage.tokens.toLocaleString("en-IN")} note={`${geminiUsage.calls} logged calls`} />
-        <Metric label="Other / quarantine" value={`${Math.round(otherShare * 100)}% / ${Math.round(results.run.quarantine_rate * 100)}%`} note="Target L1 other below 15%" />
+        <Metric label="Selected feedback" value={String(results.summary.total_reviews || 0)} note="1-3 star reviews and enabled public sources" />
+        <Metric label="Listening posts" value={reportSources.join(" · ") || "Selected sources"} note={`${reportSources.length || 0} source${reportSources.length === 1 ? "" : "s"} contributed usable feedback`} />
+        <Metric label="Feedback period" value={formatDateRange(results.summary.date_range)} note="Most recent selected public feedback" />
+        <Metric label="Tracked cost" value={`${formatInr(trackedCost)} of ${formatInr(results.run.budget_cap)}`} note={`Gemini ${formatInr(geminiUsage.cost)} · Apify ${formatInr(apifyUsage.cost)}`} />
+        <Metric label="Quality check" value={`${Math.round((1 - otherShare) * 100)}% mapped`} note={`${Math.round(otherShare * 100)}% other · ${Math.round(results.run.quarantine_rate * 100)}% quarantined`} />
       </section>
 
       <ThemeDensityPanel results={results} expandedThemes={expandedThemes} onToggle={toggleTheme} />
 
       <ResultsCharts results={results} />
 
-      <section className="section-block">
+      <section className="section-block source-quality-section">
         <div className="section-title-row">
           <div>
-            <h2>Source ROI</h2>
+            <h2>Source quality</h2>
             <p>Useful rows are rows assigned to a non-other theme.</p>
           </div>
         </div>
@@ -341,7 +340,7 @@ export function ResultsPage() {
             <tbody>
               {(results.summary.source_quality || []).map((row: any) => (
                 <tr key={row.source}>
-                  <td>{row.source}</td>
+                  <td>{formatSource(row.source)}</td>
                   <td>{row.rows}</td>
                   <td>{row.useful_rows}</td>
                   <td>{Math.round((row.non_other_pct || 0) * 100)}%</td>
@@ -358,7 +357,7 @@ export function ResultsPage() {
         </div>
       </section>
 
-      <section className="history-panel">
+      <section className="history-panel review-history" data-print="exclude">
         <div className="table-toolbar review-toolbar">
           <div>
             <h2>Tagged Reviews</h2>
@@ -447,6 +446,52 @@ function Metric({ label, value, note = "" }: { label: string; value: string; not
       {note ? <small>{note}</small> : null}
     </div>
   );
+}
+
+function RunLoadingState({ loading }: { loading: boolean }) {
+  return (
+    <main className="app-shell analyst-page run-state-shell">
+      <header className="editorial-app-header report-header"><Link to="/" className="brand-lockup"><span>VOC</span>Voice of Customer</Link></header>
+      <section className="run-state-card launch-state-card">
+        <p className="section-marker">Preparing analysis</p>
+        <h1>{loading ? "Setting up your analyst." : "Your analysis is starting."}</h1>
+        <p>We are connecting the selected sources and reserving the worker. This page will switch to the live analysis view as soon as the run record is ready.</p>
+        <div className="launch-steps"><span className="active">01 Create analysis</span><span>02 Collect feedback</span><span>03 Build your report</span></div>
+      </section>
+    </main>
+  );
+}
+
+function analystStepIndex(currentStage: string, stageDetail: string, progress: number) {
+  const text = `${currentStage} ${stageDetail}`.toLowerCase();
+  if (/scrap|collect|source/.test(text)) return 0;
+  if (/clean|dedup|select/.test(text)) return 1;
+  if (/discover|taxonomy|theme/.test(text) && !/classif/.test(text)) return 2;
+  if (/classif|assign|batch/.test(text)) return 3;
+  if (/synth|export|report|deck/.test(text)) return 4;
+  return Math.min(ANALYST_STEPS.length - 1, Math.floor(Math.max(0, progress || 0) * ANALYST_STEPS.length));
+}
+
+function formatSource(source: string) {
+  const labels: Record<string, string> = {
+    play: "Google Play",
+    appstore: "App Store",
+    maps: "Google Maps",
+    instagram: "Instagram",
+    twitter: "X / Twitter",
+    reddit: "Reddit",
+    mouthshut: "MouthShut",
+  };
+  return labels[source] || source;
+}
+
+function formatDateRange(value?: { start?: string; end?: string }) {
+  if (!value?.start || !value?.end) return "Date range unavailable";
+  const start = new Date(value.start);
+  const end = new Date(value.end);
+  if (Number.isNaN(start.valueOf()) || Number.isNaN(end.valueOf())) return `${value.start} to ${value.end}`;
+  const options: Intl.DateTimeFormatOptions = { month: "short", year: "numeric" };
+  return `${start.toLocaleDateString("en-IN", options)} — ${end.toLocaleDateString("en-IN", options)}`;
 }
 
 function ThemeDensityPanel({

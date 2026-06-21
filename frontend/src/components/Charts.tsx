@@ -7,122 +7,85 @@ function entries(obj?: Record<string, number>) {
   return Object.entries(obj || {}).filter(([, value]) => Number(value) > 0);
 }
 
-function humanizeTheme(theme: string) {
-  if (theme === "other") return "Other";
-  if (theme === "payments_or_refunds") return "Payments & refunds.";
-  if (theme === "login_or_kyc") return "Login & KYC.";
-  if (theme === "support_quality") return "Support quality.";
-  if (theme === "app_reliability") return "App reliability.";
-  if (theme === "delivery_or_service_fulfillment") return "Delivery & service fulfillment.";
-  if (theme === "quality_or_professionalism") return "Quality & professionalism.";
-  if (theme === "pricing_or_fees") return "Pricing & fees.";
-  if (theme === "pricing_and_promotions") return "Pricing & promotions.";
-  if (theme === "pricing_and_value") return "Pricing & value.";
-  if (theme === "unfair_refund_policies_and_failure_to_process_refunds") {
-    return "Refunds: unfair policies & failures to process.";
-  }
-  const words = cleanThemeWords(theme.replaceAll("_", " "));
-  const lowerWords = words.toLowerCase();
-  if (lowerWords.includes("overpriced") && !lowerWords.startsWith("pricing")) {
-    return `Pricing: ${words}.`;
-  }
-  if (lowerWords.startsWith("pricing ")) {
-    const rest = words.replace(/^pricing\s+/i, "");
-    if (rest.startsWith("and ")) return `Pricing & ${rest.slice(4)}.`;
-    return `Pricing: ${rest}.`;
-  }
-  return `${words.charAt(0).toUpperCase()}${words.slice(1)}.`;
+function formatSource(source: string) {
+  const labels: Record<string, string> = {
+    play: "Google Play",
+    appstore: "App Store",
+    maps: "Google Maps",
+    instagram: "Instagram",
+    twitter: "X / Twitter",
+    reddit: "Reddit",
+    mouthshut: "MouthShut",
+  };
+  return labels[source] || source;
 }
 
-function cleanThemeWords(words: string) {
-  const replacements: Record<string, string> = {
-    "overd products": "overpriced products",
-    "poor ,": "poor,",
-    "in- feedback": "in-app feedback",
-    "behind /registration": "behind login/registration",
-    "without mandatory.": "without mandatory registration.",
-    "without mandatory ": "without mandatory registration ",
-  };
-  return Object.entries(replacements)
-    .reduce((text, [oldText, newText]) => text.replaceAll(oldText, newText), words)
-    .replace(/\s+/g, " ")
-    .trim();
-}
+const compactOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  resizeDelay: 150,
+  animation: false as const,
+};
 
 export function ResultsCharts({ results }: { results: Results }) {
-  const themes = results.themes.slice(0, 10);
   const ratingEntries = entries(results.summary.rating_distribution);
   const sourceEntries = entries(results.summary.source_mix);
   const volumeEntries = entries(results.summary.volume_over_time);
-  const sourceQuality = (results.summary.source_quality || []) as Array<{ source: string; rows: number; useful_rows: number; non_other_pct: number }>;
+  const sourceQuality = (results.summary.source_quality || []) as Array<{ source: string; rows: number; useful_rows: number }>;
+  const hasSourceComparison = sourceQuality.length > 1 || sourceEntries.length > 1;
+  const hasVolumeTrend = volumeEntries.length > 1;
+  const hasRatings = ratingEntries.length > 0;
+  const panelCount = [hasRatings, hasVolumeTrend, hasSourceComparison].filter(Boolean).length;
+
+  if (!panelCount) return null;
 
   return (
-    <div className="chart-grid">
-      <section className="section-block chart-panel wide-chart">
-        <h3>Themes by score</h3>
-        <Bar
-          data={{
-            labels: themes.map((theme) => humanizeTheme(theme.theme)),
-            datasets: [{ label: "Theme score", data: themes.map((theme) => theme.theme_score), backgroundColor: palette[0] }],
-          }}
-          options={{
-            indexAxis: "y",
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
-          }}
-        />
-      </section>
-      <section className="section-block chart-panel">
-        <h3>L1 theme split</h3>
-        <Doughnut
-          data={{
-            labels: themes.map((theme) => humanizeTheme(theme.theme)),
-            datasets: [{ data: themes.map((theme) => theme.count), backgroundColor: palette }],
-          }}
-          options={{ responsive: true, maintainAspectRatio: false }}
-        />
-      </section>
-      <section className="section-block chart-panel">
-        <h3>Rating mix</h3>
-        <Bar
-          data={{
-            labels: ratingEntries.map(([key]) => `${key} star`),
-            datasets: [{ label: "Reviews", data: ratingEntries.map(([, value]) => value), backgroundColor: palette[2] }],
-          }}
-          options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }}
-        />
-      </section>
-      <section className="section-block chart-panel">
-        <h3>Source mix</h3>
-        <Doughnut
-          data={{ labels: sourceEntries.map(([key]) => key), datasets: [{ data: sourceEntries.map(([, value]) => value), backgroundColor: palette }] }}
-          options={{ responsive: true, maintainAspectRatio: false }}
-        />
-      </section>
-      <section className="section-block chart-panel">
-        <h3>Volume over time</h3>
-        <Line
-          data={{
-            labels: volumeEntries.map(([key]) => key),
-            datasets: [{ label: "Reviews", data: volumeEntries.map(([, value]) => value), borderColor: palette[1], backgroundColor: "#dbeafe" }],
-          }}
-          options={{ responsive: true, maintainAspectRatio: false }}
-        />
-      </section>
-      <section className="section-block chart-panel source-roi-chart">
-        <h3>Useful rows by source</h3>
-        <Bar
-          data={{
-            labels: sourceQuality.map((row) => row.source),
-            datasets: [
-              { label: "Useful rows", data: sourceQuality.map((row) => row.useful_rows), backgroundColor: palette[0] },
-              { label: "Total rows", data: sourceQuality.map((row) => row.rows), backgroundColor: "#b9c7c4" },
-            ],
-          }}
-          options={{ responsive: true, maintainAspectRatio: false }}
-        />
-      </section>
-    </div>
+    <section className="section-block feedback-patterns">
+      <div className="section-title-row">
+        <div><h2>Feedback patterns</h2><p>Three complementary views of the selected customer feedback, without duplicating the theme map.</p></div>
+      </div>
+      <div className={"chart-grid compact-chart-grid panels-" + panelCount}>
+        {hasRatings ? (
+          <section className="chart-panel">
+            <h3>Rating mix</h3>
+            <div className="chart-canvas">
+              <Bar
+                data={{ labels: ratingEntries.map(([key]) => `${key} star`), datasets: [{ label: "Selected reviews", data: ratingEntries.map(([, value]) => value), backgroundColor: palette[2] }] }}
+                options={{ ...compactOptions, plugins: { legend: { display: false } } }}
+              />
+            </div>
+          </section>
+        ) : null}
+        {hasVolumeTrend ? (
+          <section className="chart-panel">
+            <h3>Feedback volume over time</h3>
+            <div className="chart-canvas">
+              <Line
+                data={{ labels: volumeEntries.map(([key]) => key), datasets: [{ label: "Selected reviews", data: volumeEntries.map(([, value]) => value), borderColor: palette[1], backgroundColor: "#dbeafe", tension: 0.25, fill: true }] }}
+                options={{ ...compactOptions, plugins: { legend: { display: false } } }}
+              />
+            </div>
+          </section>
+        ) : null}
+        {hasSourceComparison ? (
+          <section className="chart-panel">
+            <h3>Source contribution</h3>
+            <div className="chart-canvas">
+              {sourceQuality.length > 1 ? (
+                <Bar
+                  data={{ labels: sourceQuality.map((row) => formatSource(row.source)), datasets: [{ label: "Useful feedback", data: sourceQuality.map((row) => row.useful_rows), backgroundColor: palette[0] }, { label: "Selected feedback", data: sourceQuality.map((row) => row.rows), backgroundColor: "#b9c7c4" }] }}
+                  options={compactOptions}
+                />
+              ) : (
+                <Doughnut
+                  data={{ labels: sourceEntries.map(([key]) => formatSource(key)), datasets: [{ data: sourceEntries.map(([, value]) => value), backgroundColor: palette }] }}
+                  options={compactOptions}
+                />
+              )}
+            </div>
+          </section>
+        ) : null}
+      </div>
+    </section>
   );
 }
