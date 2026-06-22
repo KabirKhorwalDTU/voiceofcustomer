@@ -16,24 +16,25 @@
 ## Production Evidence
 
 - Playwright screenshots:
-  - `/tmp/voc-qa-landing-desktop.png`
-  - `/tmp/voc-qa-source-selection-desktop.png`
-  - `/tmp/voc-qa-mission-desktop.png`
-  - `/tmp/voc-qa-workspace-desktop.png`
-  - `/tmp/voc-qa-results-desktop-top.png`
-  - `/tmp/voc-qa-results-desktop.png`
-  - `/tmp/voc-qa-landing-mobile.png`
-  - `/tmp/voc-qa-source-selection-mobile.png`
-- Browser evidence: `/tmp/voc-playwright-report.json`
-- Full-view comparison was performed against the matching Stitch home, source-selection, mission, workspace, and report references in the same review pass. Focused comparison was not needed: the dense workspace table and report header were legible at the desktop viewport.
+  - `/tmp/voc-prod-landing.png`
+  - `/tmp/voc-prod-sample.png`
+  - `/tmp/voc-prod-workspace.png`
+  - `/tmp/voc-prod-onboarding.png`
+  - `/tmp/voc-prod-results.png`
+  - `/tmp/voc-prod-mobile.png`
+- Browser evidence: `/tmp/voc-prod-qa.json`
+- Production deployment: `dpl_314N5kfsX6v3NDYNctgvLw9gaq47`, commit `a511e71`.
+- Full-view comparison was performed against the matching Stitch home, source-selection, analyst-at-work, and report references in the same review pass. The production screenshots were checked at the same desktop viewport and on a `390px` mobile viewport.
 
 ## Findings
 
-No actionable P0, P1, or P2 mismatches found.
+No actionable P0, P1, or P2 mismatches found after the production hardening pass.
 
 - Intentional deviation: the Stitch mock's `Last 30 days` mission control is absent because the confirmed product brief removed it.
 - Intentional deviation: the workspace uses one unified, paginated historical list rather than mock data split across multiple dashboard panels; this preserves the established run-management model.
-- P3 follow-up: a live `Analyst at Work` screen was not recaptured during this pass because no active run was available and starting one would create a billable analysis. The real stage-based screen remains implemented and was covered by the existing API and worker tests.
+- The workspace no longer flashes an empty history while the saved-run request is in flight; it keeps the table shell and displays an explicit loading state instead.
+- The report no longer renders the redundant configured/disabled-source banners on a healthy completed run. Partial data and low-confidence states still surface when applicable.
+- The review table is intentionally excluded from print. A completed Dealshare report produced a three-page A4 PDF rather than a multi-thousand-page document.
 
 ## Fidelity Surfaces
 
@@ -41,13 +42,15 @@ No actionable P0, P1, or P2 mismatches found.
 - Spacing and layout rhythm: sharp borders, zero-radius tool surfaces, stable two-column desktop composition, and vertical mobile stacking match the Stitch design language without clipping or overlapping controls.
 - Colors and tokens: black/white structure, a restrained purple primary action/selection state, green completion/verification, and risk status colors are consistently applied.
 - Image quality and asset fidelity: the target contains no required product photography or custom illustration. Production uses the existing Lucide icon set for standard UI concepts; no placeholder art or CSS illustration substitutes appear.
-- Copy and content: customer-facing language consistently uses `Voice of Customer`, `customer feedback risk`, mission focus, source choice, and evidence. Deck terminology is absent from the checked customer routes.
+- Copy and content: customer-facing language consistently uses `Voice of Customer`, `customer feedback risk`, mission focus, source choice, and evidence. The seven real listening sources are named on the landing page, and examples use First Club and Swiggy in an India-focused context. Deck terminology is absent from the checked customer routes.
 
 ## Functional Evidence
 
-- Playwright exercised `landing -> Start a free check -> entity discovery -> source selection -> mission selection` without creating a run.
-- Playwright signed in as the legacy workspace owner and verified that the workspace settled to `39` historical intelligence checks.
-- Playwright opened a completed production report, rendered `Customer feedback risk`, and found no framework error overlays.
+- Playwright exercised `landing -> First Club sample -> workspace -> entity discovery -> source selection` without creating a billable run.
+- Playwright signed in as the legacy workspace owner and verified that the workspace settled to `40` historical intelligence checks. It observed the loading shell first and no premature empty state.
+- Playwright opened a completed production report, verified three fixed-height chart canvases remained stable after a re-render wait, and confirmed the redundant healthy-run banners were absent.
+- The live analyst state was exercised against the same production result payload with a simulated active worker state. It showed the real stage sequence, a clear next step, and report deliverables without invented findings.
+- Print media verification hid the raw review table; the generated production PDF contained `3` A4 pages.
 - Desktop and mobile pages contained meaningful content at every checked route. The production console recorded no errors or warnings during the pass.
 - `npm run build` passed in `frontend/`.
 - `backend/.venv/bin/python -m pytest backend/tests -q` previously passed: `46` tests.
