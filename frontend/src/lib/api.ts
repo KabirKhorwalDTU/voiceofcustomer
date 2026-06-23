@@ -1,6 +1,8 @@
-// Keep the production app functional if Vercel's build-time variable is ever
-// absent. The environment value still wins for previews or future backend moves.
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? "http://localhost:8000" : "https://voc-ai-agent-api.onrender.com")).replace(/\/+$/, "");
+// Production calls stay same-origin and are proxied by Vercel's /api rewrite.
+// That avoids browser extensions and network policies blocking a direct Render URL.
+const API_BASE = import.meta.env.DEV
+  ? (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/+$/, "")
+  : "";
 const GUEST_ID_KEY = "voc_guest_id";
 const AUTH_TOKEN_KEY = "voc_auth_token";
 const AUTH_USER_KEY = "voc_auth_user";
@@ -240,9 +242,6 @@ function authHeaders() {
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  if (!API_BASE) {
-    throw new Error("API backend is not configured. Set VITE_API_BASE_URL to the deployed FastAPI backend URL and redeploy the frontend.");
-  }
   let response: Response;
   try {
     response = await fetch(`${API_BASE}${path}`, {
@@ -323,9 +322,6 @@ export const api = {
     });
   },
   deleteRun(id: string) {
-    if (!API_BASE) {
-      return Promise.reject(new Error("API backend is not configured. Set VITE_API_BASE_URL to the deployed FastAPI backend URL and redeploy the frontend."));
-    }
     return fetch(`${API_BASE}/api/runs/${id}`, { method: "DELETE", headers: authHeaders() }).then(async (response) => {
       if (!response.ok) {
         const body = await response.text();
