@@ -109,6 +109,60 @@ class RunOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class RunListCompanyOut(BaseModel):
+    """The small company shape needed to render a workspace row."""
+
+    id: str
+    name: str
+    domain: Optional[str] = None
+    selected_sources: List[str] = Field(default_factory=list)
+
+    model_config = {"from_attributes": True}
+
+
+class RunListItemOut(BaseModel):
+    id: str
+    company_id: str
+    status: str
+    model_used: Optional[str] = None
+    cost_estimate: float = 0
+    budget_cap: float = 0
+    quarantine_rate: float = 0
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    created_at: datetime
+    company: Optional[RunListCompanyOut] = None
+    current_stage: str = "Queued"
+    stage_detail: str = ""
+    progress: float = 0
+
+
+class RunPageOut(BaseModel):
+    items: List[RunListItemOut]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class RunStatusOut(BaseModel):
+    id: str
+    status: str
+    current_stage: str = "Queued"
+    stage_detail: str = ""
+    progress: float = 0
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    error: Optional[str] = None
+    cost_estimate: float = 0
+    quarantine_rate: float = 0
+    source_states: Dict[str, str] = Field(default_factory=dict)
+
+
+class RunStatusPageOut(BaseModel):
+    items: List[RunStatusOut]
+
+
 class SubmitRunResponse(BaseModel):
     run: RunOut
     deduped_existing: bool
@@ -203,3 +257,32 @@ class ResultsOut(BaseModel):
     logs: List[RunLogOut] = []
     summary: Dict[str, Any]
     deck_spec: str
+
+
+class EndpointUsageOut(BaseModel):
+    usage_date: dt_date
+    endpoint: str
+    status_code: int
+    request_count: int
+    response_body_bytes: int
+
+    model_config = {"from_attributes": True}
+
+
+class EgressWarningOut(BaseModel):
+    cycle_start: dt_date
+    threshold_bytes: int
+    estimated_bytes: int
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class EgressOpsOut(BaseModel):
+    cycle_start: dt_date
+    cycle_end: dt_date
+    estimated_response_bytes: int
+    estimated_response_gb: float
+    warning_thresholds_gb: List[float]
+    warnings: List[EgressWarningOut]
+    endpoints: List[EndpointUsageOut]

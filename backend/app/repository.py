@@ -1,11 +1,12 @@
-from datetime import datetime, timezone
+import calendar
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import and_, case, cast, delete, desc, func, or_, select, String
 from sqlalchemy.orm import Session, joinedload
 
 from app.auth import Actor
-from app.models import Company, LegacyRunAccess, Review, Run, RunLog, Settings, Theme, User
+from app.models import ApiUsageDaily, Company, EgressWarning, LegacyRunAccess, Review, Run, RunLog, Settings, Theme, User
 from app.onboarding import normalize_business_type, normalize_sources, selected_sources_for_company
 from app.pipeline.resolver import ResolvedLinks, resolve_links
 from app.schemas import SubmitRunRequest
@@ -13,6 +14,8 @@ from app.schemas import SubmitRunRequest
 
 ACTIVE_STATUSES = ("queued", "scraping", "classifying")
 LEGACY_WORKSPACE_EMAIL = "kabirkhorwal2001@gmail.com"
+BYTES_PER_GB = 1_000_000_000
+EGRESS_WARNING_THRESHOLDS_GB = (2.0, 3.5, 4.5)
 
 
 def get_settings(session: Session) -> Settings:
@@ -41,6 +44,16 @@ def actor_filters(model, actor: Optional[Actor]):
     if actor.guest_id:
         return [model.guest_id == actor.guest_id, model.owner_user_id.is_(None)]
     return [model.owner_user_id.is_(None), model.guest_id.is_(None)]
+
+
+def actor_run_visibility_filters(actor: Optional[Actor]):
+    """Return the same run visibility contract used by every run collection."""
+    if actor is None or actor.is_operator:
+        return []
+    if actor.user_id:
+        granted_runs = select(LegacyRunAccess.run_id).where(LegacyRunAccess.user_id == actor.user_id)
+        return [or_(Run.owner_user_id == actor.user_id, Run.id.in_(granted_runs))]
+    return actor_filters(Run, actor)
 
 
 def is_legacy_workspace_actor(session: Session, actor: Optional[Actor]) -> bool:
@@ -293,11 +306,39 @@ def list_runs(session: Session, limit: int = 250) -> List[Run]:
     )
 
 
+def list_visible_runs_page(
+    session: Session,
+    actor: Optional[Actor],
+    page: int = 1,
+    page_size: int = 25,
+    query: str = "",
+) -> Tuple[List[Run], int]:
+    """Return only the requested workspace page; dashboard history is never bulk-loaded."""
+    page = max(1, page)
+    page_size = max(1, min(page_size, 50))
+    filters = actor_run_visibility_filters(actor)
+    statement = select(Run).join(Run.company).where(*filters)
+    if query.strip():
+        needle = f"%{query.strip()}%"
+        statement = statement.where(
+            or_(
+                Company.name.ilike(needle),
+                Company.domain.ilike(needle),
+                Run.id.ilike(needle),
+                cast(Run.status, String).ilike(needle),
+            )
+        )
+    total = int(session.execute(select(func.count()).select_from(statement.subquery())).scalar_one())
+    rows = list(
+        session.execute(
+            statement.options(joinedload(Run.company)).order_by(desc(Run.created_at)).limit(page_size).offset((page - 1) * page_size)
+        ).scalars()
+    )
+    return rows, total
+
+
 def list_actor_runs(session: Session, actor: Actor, limit: int = 250) -> List[Run]:
-    filters = actor_filters(Run, actor)
-    if actor.user_id:
-        granted_runs = select(LegacyRunAccess.run_id).where(LegacyRunAccess.user_id == actor.user_id)
-        filters = [or_(Run.owner_user_id == actor.user_id, Run.id.in_(granted_runs))]
+    filters = actor_run_visibility_filters(actor)
     return list(
         session.execute(
             select(Run)
@@ -305,6 +346,19 @@ def list_actor_runs(session: Session, actor: Actor, limit: int = 250) -> List[Ru
             .options(joinedload(Run.company))
             .order_by(desc(Run.created_at))
             .limit(limit)
+        ).scalars()
+    )
+
+
+def get_actor_run_statuses(session: Session, actor: Optional[Actor], run_ids: List[str]) -> List[Run]:
+    if not run_ids:
+        return []
+    return list(
+        session.execute(
+            select(Run)
+            .where(Run.id.in_(run_ids), *actor_run_visibility_filters(actor))
+            .options(joinedload(Run.company))
+            .order_by(desc(Run.created_at))
         ).scalars()
     )
 
@@ -411,10 +465,7 @@ def query_run_reviews(
 
 
 def get_company_runs(session: Session, company_id: str, actor: Optional[Actor] = None) -> List[Run]:
-    filters = actor_filters(Run, actor)
-    if actor and actor.user_id:
-        granted_runs = select(LegacyRunAccess.run_id).where(LegacyRunAccess.user_id == actor.user_id)
-        filters = [or_(Run.owner_user_id == actor.user_id, Run.id.in_(granted_runs))]
+    filters = actor_run_visibility_filters(actor)
     return list(
         session.execute(
             select(Run).where(Run.company_id == company_id, *filters).options(joinedload(Run.company)).order_by(desc(Run.created_at))
@@ -549,3 +600,104 @@ def get_run_cost_rollup(session: Session, run_id: str) -> Dict[str, Dict[str, fl
         for provider, events, cost, input_tokens, output_tokens, total_tokens, calls in rows
         if provider
     }
+
+
+def billing_cycle_bounds(now: Optional[datetime] = None, cycle_day: int = 24) -> Tuple[date, date]:
+    """Return UTC billing bounds; Supabase usage reporting is UTC based."""
+    current = (now or datetime.now(timezone.utc)).date()
+    cycle_day = max(1, min(int(cycle_day), 28))
+
+    def anchored(year: int, month: int) -> date:
+        return date(year, month, min(cycle_day, calendar.monthrange(year, month)[1]))
+
+    current_anchor = anchored(current.year, current.month)
+    if current >= current_anchor:
+        start = current_anchor
+    elif current.month == 1:
+        start = anchored(current.year - 1, 12)
+    else:
+        start = anchored(current.year, current.month - 1)
+    if start.month == 12:
+        end = anchored(start.year + 1, 1)
+    else:
+        end = anchored(start.year, start.month + 1)
+    return start, end
+
+
+def persist_api_usage(
+    session: Session,
+    buckets: Dict[Tuple[date, str, int], Tuple[int, int]],
+    cycle_day: int = 24,
+    now: Optional[datetime] = None,
+) -> List[EgressWarning]:
+    """Merge an in-process metrics batch and create each budget warning once."""
+    for (usage_date, endpoint, status_code), (request_count, response_bytes) in buckets.items():
+        row = session.execute(
+            select(ApiUsageDaily).where(
+                ApiUsageDaily.usage_date == usage_date,
+                ApiUsageDaily.endpoint == endpoint,
+                ApiUsageDaily.status_code == status_code,
+            )
+        ).scalars().first()
+        if row is None:
+            row = ApiUsageDaily(
+                usage_date=usage_date,
+                endpoint=endpoint,
+                status_code=status_code,
+                request_count=int(request_count),
+                response_body_bytes=int(response_bytes),
+            )
+            session.add(row)
+        else:
+            row.request_count += int(request_count)
+            row.response_body_bytes += int(response_bytes)
+    session.flush()
+
+    cycle_start, cycle_end = billing_cycle_bounds(now=now, cycle_day=cycle_day)
+    estimated_bytes = int(
+        session.execute(
+            select(func.coalesce(func.sum(ApiUsageDaily.response_body_bytes), 0)).where(
+                ApiUsageDaily.usage_date >= cycle_start,
+                ApiUsageDaily.usage_date < cycle_end,
+            )
+        ).scalar_one()
+        or 0
+    )
+    emitted = {
+        int(value)
+        for value in session.execute(
+            select(EgressWarning.threshold_bytes).where(EgressWarning.cycle_start == cycle_start)
+        ).scalars()
+    }
+    warnings: List[EgressWarning] = []
+    for threshold_gb in EGRESS_WARNING_THRESHOLDS_GB:
+        threshold_bytes = int(threshold_gb * BYTES_PER_GB)
+        if estimated_bytes < threshold_bytes or threshold_bytes in emitted:
+            continue
+        warning = EgressWarning(
+            cycle_start=cycle_start,
+            threshold_bytes=threshold_bytes,
+            estimated_bytes=estimated_bytes,
+        )
+        session.add(warning)
+        warnings.append(warning)
+    session.flush()
+    return warnings
+
+
+def get_egress_usage(session: Session, cycle_day: int = 24, now: Optional[datetime] = None) -> Tuple[date, date, int, List[ApiUsageDaily], List[EgressWarning]]:
+    cycle_start, cycle_end = billing_cycle_bounds(now=now, cycle_day=cycle_day)
+    entries = list(
+        session.execute(
+            select(ApiUsageDaily)
+            .where(ApiUsageDaily.usage_date >= cycle_start, ApiUsageDaily.usage_date < cycle_end)
+            .order_by(desc(ApiUsageDaily.response_body_bytes), ApiUsageDaily.endpoint)
+        ).scalars()
+    )
+    total = sum(int(row.response_body_bytes or 0) for row in entries)
+    warnings = list(
+        session.execute(
+            select(EgressWarning).where(EgressWarning.cycle_start == cycle_start).order_by(EgressWarning.threshold_bytes)
+        ).scalars()
+    )
+    return cycle_start, cycle_end, total, entries, warnings

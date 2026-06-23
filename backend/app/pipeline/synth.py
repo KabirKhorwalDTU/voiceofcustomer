@@ -1,6 +1,6 @@
 from collections import Counter, defaultdict
 import csv
-from datetime import date
+from datetime import date, datetime, timezone
 from io import BytesIO, StringIO
 import json
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -250,6 +250,39 @@ def build_summary(run: Run, reviews: List[Review], themes: List[Theme]) -> Dict[
             "scope": "Based on selected public feedback, not a universal measure of business health.",
         },
         "insight_summary": run.insight_summary or {},
+    }
+
+
+def build_report_snapshot(
+    company: Company,
+    run: Run,
+    themes: List[Theme],
+    summary: Dict[str, Any],
+    cost_rollup: Optional[Dict[str, Dict[str, float]]] = None,
+) -> Dict[str, Any]:
+    """Serialize report presentation data once, after synthesis has finished."""
+    snapshot_summary = dict(summary)
+    snapshot_summary["cost_rollup"] = cost_rollup or {}
+    theme_rows = [
+        {
+            "id": theme.id,
+            "theme": theme.theme,
+            "count": int(theme.count or 0),
+            "normalized_frequency": float(theme.normalized_frequency or 0),
+            "share": float(theme.normalized_frequency or 0),
+            "theme_score": float(theme.theme_score or 0),
+            "rank": int(theme.rank or 0),
+            "top_quotes": list(theme.top_quotes or []),
+            "l2_subthemes": list(theme.l2_subthemes or []),
+        }
+        for theme in themes
+    ]
+    return {
+        "version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "summary": snapshot_summary,
+        "themes": theme_rows,
+        "deck_spec": build_deck_spec(company, run, [], themes, summary=snapshot_summary),
     }
 
 

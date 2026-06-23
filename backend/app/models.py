@@ -4,7 +4,7 @@ import uuid
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import Boolean, CHAR, Date, DateTime, Enum, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, CHAR, Date, DateTime, Enum, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
@@ -106,6 +106,9 @@ class Run(Base):
     dedup_ratio: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     quarantine_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     insight_summary: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    # Immutable presentation data produced once during synthesis. Serving this
+    # snapshot keeps report refreshes from materializing every review again.
+    report_snapshot: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -173,6 +176,30 @@ class RunLog(Base):
     total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     details: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class ApiUsageDaily(Base):
+    __tablename__ = "api_usage_daily"
+    __table_args__ = (UniqueConstraint("usage_date", "endpoint", "status_code", name="api_usage_daily_endpoint_status_unique"),)
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=uuid_str)
+    usage_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    endpoint: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    status_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    response_body_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class EgressWarning(Base):
+    __tablename__ = "egress_warnings"
+    __table_args__ = (UniqueConstraint("cycle_start", "threshold_bytes", name="egress_warning_cycle_threshold_unique"),)
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=uuid_str)
+    cycle_start: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    threshold_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    estimated_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Settings(Base):

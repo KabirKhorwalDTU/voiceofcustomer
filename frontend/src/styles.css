@@ -1251,7 +1251,12 @@ button:disabled {
 }
 
 .workspace-run-main {
-  display: contents;
+  display: grid;
+  grid-column: 1 / span 3;
+  grid-template-columns: minmax(0, 1.15fr) minmax(260px, 0.95fr) 150px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
   color: #000000;
   background: transparent;
   cursor: pointer;
@@ -2471,6 +2476,11 @@ table {
   .results-stats,
   .queue-summary,
   .chart-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-run-main {
+    grid-column: auto;
     grid-template-columns: 1fr;
   }
 

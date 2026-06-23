@@ -1,4 +1,6 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? "http://localhost:8000" : "");
+// Keep the production app functional if Vercel's build-time variable is ever
+// absent. The environment value still wins for previews or future backend moves.
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? "http://localhost:8000" : "https://voc-ai-agent-api.onrender.com")).replace(/\/+$/, "");
 const GUEST_ID_KEY = "voc_guest_id";
 const AUTH_TOKEN_KEY = "voc_auth_token";
 const AUTH_USER_KEY = "voc_auth_user";
@@ -36,12 +38,12 @@ export type Run = {
   company_id: string;
   status: "queued" | "scraping" | "classifying" | "done" | "partial" | "failed";
   model_used?: string | null;
-  source_counts: Record<string, number>;
-  completeness: Record<string, { status: string; count?: number; error?: string; mode?: string }>;
-  cost_estimate: number;
-  budget_cap: number;
-  dedup_ratio: number;
-  quarantine_rate: number;
+  source_counts?: Record<string, number>;
+  completeness?: Record<string, { status: string; count?: number; error?: string; mode?: string }>;
+  cost_estimate?: number;
+  budget_cap?: number;
+  dedup_ratio?: number;
+  quarantine_rate?: number;
   started_at?: string | null;
   finished_at?: string | null;
   error?: string | null;
@@ -50,6 +52,32 @@ export type Run = {
   current_stage: string;
   stage_detail: string;
   progress: number;
+};
+
+export type RunListCompany = Pick<Company, "id" | "name" | "domain" | "selected_sources">;
+
+export type RunListItem = Omit<Run, "company" | "source_counts" | "completeness" | "cost_estimate" | "budget_cap" | "dedup_ratio" | "quarantine_rate"> & {
+  company?: RunListCompany;
+} &
+  Partial<Pick<Run, "source_counts" | "completeness" | "cost_estimate" | "budget_cap" | "dedup_ratio" | "quarantine_rate">>;
+
+export type RunPage = {
+  items: RunListItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+};
+
+export type RunStatus = Pick<Run, "id" | "status" | "current_stage" | "stage_detail" | "progress" | "started_at" | "finished_at" | "error"> & {
+  source_counts?: Record<string, number>;
+  completeness?: Record<string, { status: string; count?: number; error?: string; mode?: string }>;
+  cost_estimate?: number;
+  quarantine_rate?: number;
+};
+
+export type RunStatusPage = {
+  items: RunStatus[];
 };
 
 export type Review = {
@@ -274,8 +302,17 @@ export const api = {
       }),
     });
   },
-  runs() {
-    return request<Run[]>("/api/runs");
+  runs(params: { page?: number; page_size?: number; q?: string } = {}) {
+    const search = new URLSearchParams();
+    if (params.page) search.set("page", String(params.page));
+    if (params.page_size) search.set("page_size", String(params.page_size));
+    if (params.q?.trim()) search.set("q", params.q.trim());
+    const suffix = search.size ? `?${search.toString()}` : "";
+    return request<RunPage>(`/api/runs${suffix}`);
+  },
+  runStatuses(ids: string[]) {
+    if (!ids.length) return Promise.resolve({ items: [] } satisfies RunStatusPage);
+    return request<RunStatusPage>(`/api/runs/status?ids=${encodeURIComponent(ids.join(","))}`);
   },
   run(id: string) {
     return request<Run>(`/api/runs/${id}`);
@@ -329,9 +366,6 @@ export const api = {
     return `${API_BASE}/api/runs/${runId}/downloads/${fmt}`;
   },
   async downloadRun(runId: string, fmt: "xlsx" | "csv" | "json") {
-    if (!API_BASE) {
-      throw new Error("API backend is not configured. Set VITE_API_BASE_URL to the deployed FastAPI backend URL and redeploy the frontend.");
-    }
     const response = await fetch(`${API_BASE}/api/runs/${runId}/downloads/${fmt}`, { headers: authHeaders() });
     if (!response.ok) {
       const body = await response.text();
@@ -341,8 +375,17 @@ export const api = {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `tagged_reviews.${fmt}`;
+    const disposition = response.headers.get("content-disposition") || "";
+    const filename = /filename="?([^";]+)"?/i.exec(disposition)?.[1] || `tagged_reviews.${fmt}`;
+    link.download = filename;
+    link.style.display = "none";
+    document.body.appendChild(link);
     link.click();
-    URL.revokeObjectURL(url);
+    // Some browsers begin reading the Blob after the click handler returns.
+    // Revoking immediately can produce a no-op download without an error.
+    window.setTimeout(() => {
+      link.remove();
+      URL.revokeObjectURL(url);
+    }, 1_000);
   },
 };

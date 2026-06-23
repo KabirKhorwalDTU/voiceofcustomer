@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Activity, ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, Clock3, Download, ListChecks, Printer, Radar, RotateCcw } from "lucide-react";
 import { ResultsCharts } from "../components/Charts";
 import { StatusBadge } from "../components/StatusBadge";
-import { api, Results, ReviewPage, RunLog } from "../lib/api";
+import { api, Results, ReviewPage, RunLog, RunStatus } from "../lib/api";
 
 const ACTIVE = new Set(["queued", "scraping", "classifying"]);
+const STATUS_POLL_INTERVAL_MS = 15_000;
 const ANALYST_STEPS = [
   { stage: "scraping", label: "Collect public feedback" },
   { stage: "cleaning", label: "Clean and select relevant feedback" },
@@ -39,7 +40,7 @@ export function ResultsPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const inProductWorkspace = location.pathname.startsWith("/app");
-  const basePath = location.pathname.startsWith("/kabir") || location.pathname.startsWith("/runs/") ? "/kabir" : "/app";
+  const basePath = "/app";
   const [results, setResults] = useState<Results | null>(null);
   const [reviewPage, setReviewPage] = useState<ReviewPage | null>(null);
   const [filters, setFilters] = useState<ReviewFilters>(emptyFilters);
@@ -47,22 +48,37 @@ export function ResultsPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [rerunning, setRerunning] = useState(false);
+  const [downloading, setDownloading] = useState<"xlsx" | "csv" | "json" | "">("");
   const [error, setError] = useState("");
   const [initialLoading, setInitialLoading] = useState(true);
+  const terminalRefreshes = useRef(new Set<string>());
+  const initialRunLoadRef = useRef("");
 
-  async function loadResults() {
+  const loadResults = useCallback(async () => {
     if (!runId) return;
     const next = await api.results(runId);
     setResults(next);
-  }
+  }, [runId]);
 
-  async function loadReviews(nextPage = page) {
+  const loadReviews = useCallback(async (nextPage = page) => {
     if (!runId) return;
     const next = await api.reviews(runId, { page: nextPage, page_size: pageSize, ...filters });
     setReviewPage(next);
-  }
+  }, [filters, page, pageSize, runId]);
+
+  const loadCompletedData = useCallback(async () => {
+    if (!runId) return;
+    const [nextResults, nextReviews] = await Promise.all([
+      api.results(runId),
+      api.reviews(runId, { page, page_size: pageSize, ...filters }),
+    ]);
+    setResults(nextResults);
+    setReviewPage(nextReviews);
+  }, [filters, page, pageSize, runId]);
 
   useEffect(() => {
+    if (!runId || initialRunLoadRef.current === runId) return;
+    initialRunLoadRef.current = runId;
     setResults(null);
     setReviewPage(null);
     setError("");
@@ -73,8 +89,11 @@ export function ResultsPage() {
   }, [runId]);
 
   useEffect(() => {
+    if (!results || ACTIVE.has(results.run.status)) return;
     loadReviews().catch((err) => setError(err.message));
   }, [
+    results?.run.id,
+    results?.run.status,
     runId,
     page,
     pageSize,
@@ -88,18 +107,47 @@ export function ResultsPage() {
   ]);
 
   useEffect(() => {
-    if (!results || !ACTIVE.has(results.run.status)) return;
-    const interval = window.setInterval(() => {
-      loadResults().catch(() => undefined);
-      loadReviews().catch(() => undefined);
-    }, 4000);
-    return () => window.clearInterval(interval);
-  }, [results?.run.status, runId, page, pageSize, filters]);
+    if (!runId || !results || !ACTIVE.has(results.run.status)) return;
+    let disposed = false;
+
+    const applyStatus = (status: RunStatus) => {
+      setResults((current) => current?.run.id === status.id ? { ...current, run: { ...current.run, ...status } } : current);
+    };
+
+    const pollStatus = async () => {
+      if (disposed || document.visibilityState !== "visible") return;
+      try {
+        const response = await api.runStatuses([runId]);
+        const status = response.items[0];
+        if (!status || disposed) return;
+        applyStatus(status);
+        if (!ACTIVE.has(status.status) && !terminalRefreshes.current.has(status.id)) {
+          terminalRefreshes.current.add(status.id);
+          await loadCompletedData();
+        }
+      } catch {
+        // Keep showing the last confirmed worker state if a status check fails.
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") pollStatus();
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    pollStatus();
+    const interval = window.setInterval(pollStatus, STATUS_POLL_INTERVAL_MS);
+    return () => {
+      disposed = true;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.clearInterval(interval);
+    };
+  }, [loadCompletedData, results?.run.status, runId]);
 
   const completeness = Object.entries(results?.run.completeness || {}) as Array<[string, { status: string; count?: number; error?: string; reason?: string }]>;
   const incomplete = completeness.filter(([, value]) => !["ok", "disabled"].includes(value.status));
   const otherShare = Number(results?.summary.other_share || 0);
-  const lowConfidence = Boolean(results && (results.run.quarantine_rate > 0.2 || results.summary.low_confidence));
+  const lowConfidence = Boolean(results && ((results.run.quarantine_rate || 0) > 0.2 || results.summary.low_confidence));
 
   const sourceOptions = useMemo(() => Object.keys(results?.summary.source_mix || {}).sort(), [results]);
   const themeOptions = useMemo(() => Array.from(new Set((results?.themes || []).map((theme) => theme.theme))).sort(), [results]);
@@ -166,6 +214,19 @@ export function ResultsPage() {
     }
   }
 
+  async function downloadReviews(fmt: "xlsx" | "csv" | "json") {
+    if (!results || downloading) return;
+    setDownloading(fmt);
+    setError("");
+    try {
+      await api.downloadRun(results.run.id, fmt);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not download the tagged reviews.");
+    } finally {
+      setDownloading("");
+    }
+  }
+
   if (error && !results) {
     return <main className="app-shell run-state-shell"><section className="run-state-card"><p className="section-marker">Analysis unavailable</p><h1>We could not load this report.</h1><p>{error}</p><button className="primary-button" type="button" onClick={() => { setError(""); setInitialLoading(true); loadResults().catch((err) => setError(err.message)).finally(() => setInitialLoading(false)); }}>Try again</button></section></main>;
   }
@@ -184,7 +245,7 @@ export function ResultsPage() {
           <Link to="/" className="brand-lockup"><span>VOC</span>Voice of Customer</Link>
           <div className="report-header-meta">
             <StatusBadge status={results.run.status} />
-            <Link to={inProductWorkspace ? "/app" : "/kabir"} className="icon-button" title="Back to workspace" aria-label="Back to workspace"><ArrowLeft size={18} /></Link>
+            <Link to={basePath} className="icon-button" title="Back to workspace" aria-label="Back to workspace"><ArrowLeft size={18} /></Link>
           </div>
         </header>
         <section className="analyst-work-panel">
@@ -240,7 +301,7 @@ export function ResultsPage() {
             <Printer size={16} />
             Print
           </button>
-          <Link to={inProductWorkspace ? "/app" : "/kabir"} className="icon-button" title="Back to dashboard">
+          <Link to={basePath} className="icon-button" title="Back to dashboard">
             <ArrowLeft size={18} />
           </Link>
         </div>
@@ -262,7 +323,7 @@ export function ResultsPage() {
       ) : null}
       {lowConfidence ? (
         <section className="banner danger report-notice">
-          Low confidence: quarantine {Math.round(results.run.quarantine_rate * 100)}%, L1 other {Math.round(otherShare * 100)}%.
+          Low confidence: quarantine {Math.round((results.run.quarantine_rate || 0) * 100)}%, L1 other {Math.round(otherShare * 100)}%.
         </section>
       ) : null}
       {error ? <section className="banner danger report-notice">{error}</section> : null}
@@ -309,8 +370,8 @@ export function ResultsPage() {
         <Metric label="Selected feedback" value={String(results.summary.total_reviews || 0)} note="1-3 star reviews and enabled public sources" />
         <Metric label="Listening posts" value={reportSources.join(" · ") || "Selected sources"} note={`${reportSources.length || 0} source${reportSources.length === 1 ? "" : "s"} contributed usable feedback`} />
         <Metric label="Feedback period" value={formatDateRange(results.summary.date_range)} note="Most recent selected public feedback" />
-        <Metric label="Tracked cost" value={`${formatInr(trackedCost)} of ${formatInr(results.run.budget_cap)}`} note={`Gemini ${formatInr(geminiUsage.cost)} · Apify ${formatInr(apifyUsage.cost)}`} />
-        <Metric label="Quality check" value={`${Math.round((1 - otherShare) * 100)}% mapped`} note={`${Math.round(otherShare * 100)}% other · ${Math.round(results.run.quarantine_rate * 100)}% quarantined`} />
+        <Metric label="Tracked cost" value={`${formatInr(trackedCost)} of ${formatInr(results.run.budget_cap || 0)}`} note={`Gemini ${formatInr(geminiUsage.cost)} · Apify ${formatInr(apifyUsage.cost)}`} />
+        <Metric label="Quality check" value={`${Math.round((1 - otherShare) * 100)}% mapped`} note={`${Math.round(otherShare * 100)}% other · ${Math.round((results.run.quarantine_rate || 0) * 100)}% quarantined`} />
       </section>
 
       <ThemeDensityPanel results={results} expandedThemes={expandedThemes} onToggle={toggleTheme} />
@@ -368,9 +429,9 @@ export function ResultsPage() {
               Clear filters
             </button>
             {(["xlsx", "csv", "json"] as const).map((fmt) => (
-              <button className="secondary-button" type="button" onClick={() => api.downloadRun(results.run.id, fmt).catch((err) => setError(err.message))} key={fmt}>
+              <button className="secondary-button" type="button" onClick={() => downloadReviews(fmt)} disabled={Boolean(downloading)} key={fmt}>
                 <Download size={15} />
-                {fmt}
+                {downloading === fmt ? `Preparing ${fmt}` : fmt}
               </button>
             ))}
           </div>

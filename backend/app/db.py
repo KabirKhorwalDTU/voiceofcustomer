@@ -96,6 +96,40 @@ def ensure_lightweight_migrations() -> None:
             connection.execute(text("alter table runs add column if not exists owner_user_id uuid"))
             connection.execute(text("alter table runs add column if not exists guest_id text"))
             connection.execute(text("alter table runs add column if not exists insight_summary jsonb not null default '{}'::jsonb"))
+            connection.execute(text("alter table runs add column if not exists report_snapshot jsonb not null default '{}'::jsonb"))
+            connection.execute(
+                text(
+                    """
+                    create table if not exists api_usage_daily (
+                        id uuid primary key,
+                        usage_date date not null,
+                        endpoint text not null,
+                        status_code integer not null,
+                        request_count integer not null default 0,
+                        response_body_bytes bigint not null default 0,
+                        updated_at timestamptz not null default now(),
+                        constraint api_usage_daily_endpoint_status_unique unique (usage_date, endpoint, status_code)
+                    )
+                    """
+                )
+            )
+            connection.execute(text("create index if not exists api_usage_daily_usage_date_idx on api_usage_daily(usage_date)"))
+            connection.execute(text("create index if not exists api_usage_daily_endpoint_idx on api_usage_daily(endpoint)"))
+            connection.execute(
+                text(
+                    """
+                    create table if not exists egress_warnings (
+                        id uuid primary key,
+                        cycle_start date not null,
+                        threshold_bytes bigint not null,
+                        estimated_bytes bigint not null,
+                        created_at timestamptz not null default now(),
+                        constraint egress_warning_cycle_threshold_unique unique (cycle_start, threshold_bytes)
+                    )
+                    """
+                )
+            )
+            connection.execute(text("create index if not exists egress_warnings_cycle_start_idx on egress_warnings(cycle_start)"))
             connection.execute(text("create index if not exists runs_owner_user_id_idx on runs(owner_user_id)"))
             connection.execute(text("create index if not exists runs_guest_id_idx on runs(guest_id)"))
             connection.execute(
@@ -197,6 +231,41 @@ def ensure_lightweight_migrations() -> None:
                 connection.execute(text("alter table runs add column guest_id varchar"))
             if "insight_summary" not in run_columns:
                 connection.execute(text("alter table runs add column insight_summary json not null default '{}'"))
+            if "report_snapshot" not in run_columns:
+                connection.execute(text("alter table runs add column report_snapshot json not null default '{}'"))
+            connection.execute(
+                text(
+                    """
+                    create table if not exists api_usage_daily (
+                        id varchar primary key,
+                        usage_date date not null,
+                        endpoint varchar not null,
+                        status_code integer not null,
+                        request_count integer not null default 0,
+                        response_body_bytes bigint not null default 0,
+                        updated_at datetime default current_timestamp,
+                        unique (usage_date, endpoint, status_code)
+                    )
+                    """
+                )
+            )
+            connection.execute(text("create index if not exists api_usage_daily_usage_date_idx on api_usage_daily(usage_date)"))
+            connection.execute(text("create index if not exists api_usage_daily_endpoint_idx on api_usage_daily(endpoint)"))
+            connection.execute(
+                text(
+                    """
+                    create table if not exists egress_warnings (
+                        id varchar primary key,
+                        cycle_start date not null,
+                        threshold_bytes bigint not null,
+                        estimated_bytes bigint not null,
+                        created_at datetime default current_timestamp,
+                        unique (cycle_start, threshold_bytes)
+                    )
+                    """
+                )
+            )
+            connection.execute(text("create index if not exists egress_warnings_cycle_start_idx on egress_warnings(cycle_start)"))
             connection.execute(
                 text(
                     """

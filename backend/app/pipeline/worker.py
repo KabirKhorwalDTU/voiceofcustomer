@@ -12,9 +12,9 @@ from app.models import Review, Run, RunLog, Theme
 from app.pipeline.apify import BudgetExceeded, scrape_sources
 from app.pipeline.cleaner import clean_and_dedup
 from app.pipeline.gateway import BATCH_POLL_TIMEOUT_SECONDS, LLMGateway, redact_llm_error
-from app.pipeline.synth import build_summary, build_theme_rows
+from app.pipeline.synth import build_report_snapshot, build_summary, build_theme_rows
 from app.pipeline.types import CleanReview, MAX_L2_THEMES, Tag, ThemeSet
-from app.repository import get_settings, log_run_event, set_run_status
+from app.repository import get_run_cost_rollup, get_settings, log_run_event, set_run_status
 
 
 STALE_ACTIVE_RUN_AFTER = timedelta(minutes=30)
@@ -55,6 +55,8 @@ def clear_run_outputs(session, run: Run) -> None:
     run.cost_estimate = 0
     run.dedup_ratio = 0
     run.quarantine_rate = 0
+    run.insight_summary = {}
+    run.report_snapshot = {}
 
 
 def recover_stale_active_runs(session, now: Optional[datetime] = None, stale_after: timedelta = STALE_ACTIVE_RUN_AFTER) -> int:
@@ -700,6 +702,27 @@ class Worker:
                     },
                 )
                 set_run_status(session, run, terminal)
+                # Summary, chart data, and deck text are frozen once the worker
+                # finishes. The report API can now avoid selecting every review.
+                summary["insight_summary"] = mission_summary
+                summary["cost_estimate"] = float(run.cost_estimate or 0)
+                summary["completeness"] = run.completeness or {}
+                summary["quarantine_rate"] = float(run.quarantine_rate or 0)
+                run.report_snapshot = build_report_snapshot(
+                    run.company,
+                    run,
+                    theme_rows,
+                    summary,
+                    cost_rollup=get_run_cost_rollup(session, run.id),
+                )
+                log_run_event(
+                    session,
+                    run,
+                    stage="synthesis",
+                    event="report_snapshot_persisted",
+                    status="ok",
+                    details={"version": 1, "theme_count": len(theme_rows)},
+                )
         except Exception as exc:
             with session_scope() as session:
                 run = session.get(Run, run_id)
