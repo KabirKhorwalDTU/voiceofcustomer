@@ -1,0 +1,15 @@
+{
+  "name": "Voice of Customer",
+  "short_name": "VOC",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "64x64",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "theme_color": "#050505",
+  "background_color": "#ffffff",
+  "display": "standalone"
+}
