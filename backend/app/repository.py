@@ -1,4 +1,5 @@
 import calendar
+import secrets
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -389,6 +390,34 @@ def get_run(session: Session, run_id: str) -> Optional[Run]:
     return session.execute(select(Run).where(Run.id == run_id).options(joinedload(Run.company))).scalars().first()
 
 
+def create_public_share_token(session: Session, run_id: str, actor: Optional[Actor] = None) -> str:
+    """Create one stable, opaque public link for a finished report."""
+    run = get_run(session, run_id)
+    if not run or not can_access_run(run, actor, session):
+        raise KeyError("run not found")
+    if run.status not in {"done", "partial"}:
+        raise ValueError("only completed or partial reports can be shared")
+    if run.public_share_token:
+        return run.public_share_token
+    for _ in range(5):
+        token = secrets.token_urlsafe(24)
+        exists = session.execute(select(Run.id).where(Run.public_share_token == token)).scalar_one_or_none()
+        if not exists:
+            run.public_share_token = token
+            session.flush()
+            return token
+    raise RuntimeError("could not create a unique share link")
+
+
+def get_public_shared_run(session: Session, token: str) -> Optional[Run]:
+    """Public reports are intentionally immutable and terminal-only."""
+    return session.execute(
+        select(Run)
+        .where(Run.public_share_token == token, Run.status.in_(("done", "partial")))
+        .options(joinedload(Run.company))
+    ).scalars().first()
+
+
 def get_run_results(session: Session, run_id: str, actor: Optional[Actor] = None) -> Tuple[Run, Company, List[Review], List[Theme]]:
     run = get_run(session, run_id)
     if not run or not can_access_run(run, actor, session):
@@ -417,6 +446,23 @@ def query_run_reviews(
     run = get_run(session, run_id)
     if not run or not can_access_run(run, actor, session):
         raise KeyError("run not found")
+    return _query_reviews_for_run(session, run.id, page=page, page_size=page_size, source=source, theme=theme, l2_theme=l2_theme, rating=rating, review_hash=review_hash, date_query=date_query, text_query=text_query, q=q)
+
+
+def _query_reviews_for_run(
+    session: Session,
+    run_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    source: str = "",
+    theme: str = "",
+    l2_theme: str = "",
+    rating: str = "",
+    review_hash: str = "",
+    date_query: str = "",
+    text_query: str = "",
+    q: str = "",
+) -> Tuple[List[Review], int]:
     page = max(page, 1)
     page_size = max(1, min(page_size, 100))
     filters = [Review.run_id == run_id]
@@ -462,6 +508,19 @@ def query_run_reviews(
         ).scalars()
     )
     return rows, total
+
+
+def query_public_shared_reviews(
+    session: Session,
+    token: str,
+    **filters: Any,
+) -> Tuple[List[Review], int]:
+    run = get_public_shared_run(session, token)
+    if not run:
+        raise KeyError("shared report not found")
+    # Use the same pagination and column filtering as the private report, but
+    # authorize through the opaque share token instead of a workspace session.
+    return _query_reviews_for_run(session, run.id, **filters)
 
 
 def get_company_runs(session: Session, company_id: str, actor: Optional[Actor] = None) -> List[Run]:

@@ -168,6 +168,10 @@ class SubmitRunResponse(BaseModel):
     deduped_existing: bool
 
 
+class PublicShareOut(BaseModel):
+    token: str
+
+
 class ReviewOut(BaseModel):
     id: str
     review_hash: str

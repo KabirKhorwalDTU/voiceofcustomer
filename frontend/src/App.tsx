@@ -12,6 +12,7 @@ export default function App() {
         <Route path="/sample/first-club" element={<SampleReportPage />} />
         <Route path="/app" element={<ProductWorkspace />} />
         <Route path="/app/runs/:runId" element={<ResultsPage />} />
+        <Route path="/share/:shareToken" element={<ResultsPage />} />
         <Route path="/kabir" element={<LegacyWorkspaceRedirect />} />
         <Route path="/kabir/runs/:runId" element={<LegacyRunRedirect />} />
         <Route path="/runs/:runId" element={<LegacyRunRedirect />} />

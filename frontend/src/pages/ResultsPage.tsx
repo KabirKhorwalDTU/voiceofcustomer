@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { Activity, ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, Clock3, Download, ListChecks, Printer, Radar, RotateCcw } from "lucide-react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { Activity, ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, Clock3, Download, Link2, ListChecks, Printer, Radar, RotateCcw } from "lucide-react";
 import { ResultsCharts } from "../components/Charts";
 import { StatusBadge } from "../components/StatusBadge";
 import { api, Results, ReviewPage, RunLog, RunStatus } from "../lib/api";
@@ -36,10 +36,9 @@ const emptyFilters: ReviewFilters = {
 };
 
 export function ResultsPage() {
-  const { runId } = useParams();
+  const { runId, shareToken } = useParams();
   const navigate = useNavigate();
-  const location = useLocation();
-  const inProductWorkspace = location.pathname.startsWith("/app");
+  const isShared = Boolean(shareToken);
   const basePath = "/app";
   const [results, setResults] = useState<Results | null>(null);
   const [reviewPage, setReviewPage] = useState<ReviewPage | null>(null);
@@ -48,6 +47,8 @@ export function ResultsPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [rerunning, setRerunning] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
   const [downloading, setDownloading] = useState<"xlsx" | "csv" | "json" | "">("");
   const [error, setError] = useState("");
   const [initialLoading, setInitialLoading] = useState(true);
@@ -55,30 +56,32 @@ export function ResultsPage() {
   const initialRunLoadRef = useRef("");
 
   const loadResults = useCallback(async () => {
-    if (!runId) return;
-    const next = await api.results(runId);
+    if ((!runId && !shareToken)) return;
+    const next = shareToken ? await api.sharedResults(shareToken) : await api.results(runId!);
     setResults(next);
-  }, [runId]);
+  }, [runId, shareToken]);
 
   const loadReviews = useCallback(async (nextPage = page) => {
-    if (!runId) return;
-    const next = await api.reviews(runId, { page: nextPage, page_size: pageSize, ...filters });
+    if (!runId && !shareToken) return;
+    const query = { page: nextPage, page_size: pageSize, ...filters };
+    const next = shareToken ? await api.sharedReviews(shareToken, query) : await api.reviews(runId!, query);
     setReviewPage(next);
-  }, [filters, page, pageSize, runId]);
+  }, [filters, page, pageSize, runId, shareToken]);
 
   const loadCompletedData = useCallback(async () => {
-    if (!runId) return;
+    if (!runId && !shareToken) return;
     const [nextResults, nextReviews] = await Promise.all([
-      api.results(runId),
-      api.reviews(runId, { page, page_size: pageSize, ...filters }),
+      shareToken ? api.sharedResults(shareToken) : api.results(runId!),
+      shareToken ? api.sharedReviews(shareToken, { page, page_size: pageSize, ...filters }) : api.reviews(runId!, { page, page_size: pageSize, ...filters }),
     ]);
     setResults(nextResults);
     setReviewPage(nextReviews);
-  }, [filters, page, pageSize, runId]);
+  }, [filters, page, pageSize, runId, shareToken]);
 
   useEffect(() => {
-    if (!runId || initialRunLoadRef.current === runId) return;
-    initialRunLoadRef.current = runId;
+    const identity = shareToken || runId;
+    if (!identity || initialRunLoadRef.current === identity) return;
+    initialRunLoadRef.current = identity;
     setResults(null);
     setReviewPage(null);
     setError("");
@@ -86,7 +89,7 @@ export function ResultsPage() {
     loadResults()
       .catch((err) => setError(err.message))
       .finally(() => setInitialLoading(false));
-  }, [runId]);
+  }, [runId, shareToken]);
 
   useEffect(() => {
     if (!results || ACTIVE.has(results.run.status)) return;
@@ -95,6 +98,7 @@ export function ResultsPage() {
     results?.run.id,
     results?.run.status,
     runId,
+    shareToken,
     page,
     pageSize,
     filters.review_hash,
@@ -107,7 +111,7 @@ export function ResultsPage() {
   ]);
 
   useEffect(() => {
-    if (!runId || !results || !ACTIVE.has(results.run.status)) return;
+    if (!runId || isShared || !results || !ACTIVE.has(results.run.status)) return;
     let disposed = false;
 
     const applyStatus = (status: RunStatus) => {
@@ -142,7 +146,7 @@ export function ResultsPage() {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.clearInterval(interval);
     };
-  }, [loadCompletedData, results?.run.status, runId]);
+  }, [isShared, loadCompletedData, results?.run.status, runId]);
 
   const completeness = Object.entries(results?.run.completeness || {}) as Array<[string, { status: string; count?: number; error?: string; reason?: string }]>;
   const incomplete = completeness.filter(([, value]) => !["ok", "disabled"].includes(value.status));
@@ -211,6 +215,23 @@ export function ResultsPage() {
       setError(err instanceof Error ? err.message : "Could not start rerun");
     } finally {
       setRerunning(false);
+    }
+  }
+
+  async function shareCurrentReport() {
+    if (!results || sharing) return;
+    setSharing(true);
+    setError("");
+    try {
+      const { token } = await api.createShareLink(results.run.id);
+      const link = `${window.location.origin}/share/${token}`;
+      await navigator.clipboard.writeText(link);
+      setShareCopied(true);
+      window.setTimeout(() => setShareCopied(false), 2500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create the share link.");
+    } finally {
+      setSharing(false);
     }
   }
 
@@ -293,17 +314,21 @@ export function ResultsPage() {
         </div>
         <div className="report-header-meta">
           <StatusBadge status={results.run.status} />
-          <button className="secondary-button" onClick={rerunCurrent} disabled={rerunning} title="Queue a fresh run for this company">
+          {!isShared ? <button className="secondary-button" onClick={shareCurrentReport} disabled={sharing} title="Copy a read-only link to this report">
+            <Link2 size={16} />
+            {shareCopied ? "Link copied" : sharing ? "Creating link" : "Share report"}
+          </button> : null}
+          {!isShared ? <button className="secondary-button" onClick={rerunCurrent} disabled={rerunning} title="Queue a fresh run for this company">
             <RotateCcw size={16} />
             Run again
-          </button>
+          </button> : null}
           <button className="secondary-button" onClick={() => window.print()} title="Print this customer intelligence report">
             <Printer size={16} />
             Print
           </button>
-          <Link to={basePath} className="icon-button" title="Back to dashboard">
+          {!isShared ? <Link to={basePath} className="icon-button" title="Back to dashboard">
             <ArrowLeft size={18} />
-          </Link>
+          </Link> : <Link to="/" className="icon-button" title="Voice of Customer home" aria-label="Voice of Customer home"><ArrowLeft size={18} /></Link>}
         </div>
       </header>
 
@@ -313,7 +338,7 @@ export function ResultsPage() {
           <h1>{results.company.name}: customer feedback report.</h1>
           <p>Evidence from {reportSources.join(", ") || "the selected public feedback sources"}, organized into the decisions that deserve attention now.</p>
         </div>
-        <div className="report-masthead-status"><strong>{results.run.status === "partial" ? "Partial report" : "Report ready"}</strong><span>{reportSources.length || 0} source{reportSources.length === 1 ? "" : "s"} used · {results.summary.total_reviews || 0} reviews</span></div>
+        <div className="report-masthead-status"><strong>{isShared ? "Shared report" : results.run.status === "partial" ? "Partial report" : "Report ready"}</strong><span>{reportSources.length || 0} source{reportSources.length === 1 ? "" : "s"} used · {results.summary.total_reviews || 0} reviews</span></div>
       </section>
 
       {incomplete.length ? (
@@ -428,12 +453,12 @@ export function ResultsPage() {
             <button className="secondary-button" type="button" onClick={() => { setFilters(emptyFilters); setPage(1); }}>
               Clear filters
             </button>
-            {(["xlsx", "csv", "json"] as const).map((fmt) => (
+            {!isShared ? (["xlsx", "csv", "json"] as const).map((fmt) => (
               <button className="secondary-button" type="button" onClick={() => downloadReviews(fmt)} disabled={Boolean(downloading)} key={fmt}>
                 <Download size={15} />
                 {downloading === fmt ? `Preparing ${fmt}` : fmt}
               </button>
-            ))}
+            )) : null}
           </div>
         </div>
 

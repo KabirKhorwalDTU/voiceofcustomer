@@ -321,6 +321,9 @@ export const api = {
       method: "POST",
     });
   },
+  createShareLink(id: string) {
+    return request<{ token: string }>(`/api/runs/${id}/share`, { method: "POST" });
+  },
   deleteRun(id: string) {
     return fetch(`${API_BASE}/api/runs/${id}`, { method: "DELETE", headers: authHeaders() }).then(async (response) => {
       if (!response.ok) {
@@ -339,12 +342,22 @@ export const api = {
   results(id: string) {
     return request<Results>(`/api/runs/${id}/results`);
   },
+  sharedResults(token: string) {
+    return request<Results>(`/api/shared/${encodeURIComponent(token)}/results`);
+  },
   reviews(id: string, params: Record<string, string | number | undefined>) {
     const search = new URLSearchParams();
     Object.entries(params).forEach(([key, value]) => {
       if (value !== undefined && value !== "") search.set(key, String(value));
     });
     return request<ReviewPage>(`/api/runs/${id}/reviews?${search.toString()}`);
+  },
+  sharedReviews(token: string, params: Record<string, string | number | undefined>) {
+    const search = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== "") search.set(key, String(value));
+    });
+    return request<ReviewPage>(`/api/shared/${encodeURIComponent(token)}/reviews?${search.toString()}`);
   },
   logs(id: string) {
     return request<RunLog[]>(`/api/runs/${id}/logs`);

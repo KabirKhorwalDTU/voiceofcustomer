@@ -109,6 +109,10 @@ class Run(Base):
     # Immutable presentation data produced once during synthesis. Serving this
     # snapshot keeps report refreshes from materializing every review again.
     report_snapshot: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    # An opaque, unguessable token for an explicitly shared read-only report.
+    # It is deliberately separate from the run ID so normal workspace routes
+    # remain private to their owner.
+    public_share_token: Mapped[Optional[str]] = mapped_column(String(96), nullable=True, unique=True, index=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

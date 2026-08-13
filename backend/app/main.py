@@ -22,6 +22,7 @@ from app.pipeline.worker import worker
 from app.repository import (
     can_access_run,
     claim_guest_workspace,
+    create_public_share_token,
     grant_legacy_kabir_workspace,
     create_run,
     delete_run_by_id,
@@ -32,6 +33,7 @@ from app.repository import (
     get_egress_usage,
     get_run_cost_rollup,
     get_run,
+    get_public_shared_run,
     get_run_logs,
     get_run_results,
     get_settings,
@@ -39,12 +41,14 @@ from app.repository import (
     list_visible_runs_page,
     persist_api_usage,
     query_run_reviews,
+    query_public_shared_reviews,
     rerun_company_from_run,
     update_settings,
 )
 from app.schemas import (
     AuthLoginRequest,
     AuthLoginResponse,
+    CompanyOut,
     CompanyDiscoveryOut,
     CompanyDiscoveryRequest,
     ResultsOut,
@@ -56,6 +60,7 @@ from app.schemas import (
     RunPageOut,
     RunStatusOut,
     RunStatusPageOut,
+    PublicShareOut,
     SettingsOut,
     SettingsUpdate,
     SubmitRunRequest,
@@ -458,6 +463,70 @@ def results(
         )
 
 
+@app.post("/api/runs/{run_id}/share", response_model=PublicShareOut)
+def create_share_link(
+    run_id: str,
+    authorization: str = Header(default=""),
+    x_guest_id: str = Header(default=""),
+    x_operator_mode: str = Header(default=""),
+) -> PublicShareOut:
+    with session_scope() as session:
+        actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
+        try:
+            token = create_public_share_token(session, run_id, actor)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="run not found") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        return PublicShareOut(token=token)
+
+
+@app.get("/api/shared/{token}/results", response_model=ResultsOut)
+def shared_results(token: str) -> ResultsOut:
+    with session_scope() as session:
+        run = get_public_shared_run(session, token)
+        if not run:
+            raise HTTPException(status_code=404, detail="shared report not found")
+        snapshot = get_or_create_report_snapshot(session, run, Actor(is_operator=True))
+        if not snapshot:
+            raise HTTPException(status_code=409, detail="report is still being prepared")
+        return ResultsOut(
+            company=public_company_out(run.company),
+            run=run_out(session, run),
+            reviews=[],
+            themes=list(snapshot.get("themes") or []),
+            logs=[],
+            summary=dict(snapshot.get("summary") or {}),
+            deck_spec="",
+        )
+
+
+@app.get("/api/shared/{token}/reviews", response_model=ReviewPageOut)
+def shared_reviews(
+    token: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    source: str = "",
+    theme: str = "",
+    l2_theme: str = "",
+    rating: str = "",
+    review_hash: str = "",
+    date_query: str = "",
+    text_query: str = "",
+    q: str = "",
+) -> ReviewPageOut:
+    with session_scope() as session:
+        try:
+            rows, total = query_public_shared_reviews(
+                session, token, page=page, page_size=page_size, source=source, theme=theme,
+                l2_theme=l2_theme, rating=rating, review_hash=review_hash,
+                date_query=date_query, text_query=text_query, q=q,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="shared report not found") from None
+        return ReviewPageOut(items=rows, total=total, page=page, page_size=page_size, pages=max(1, math.ceil(total / page_size)))
+
+
 @app.get("/api/runs/{run_id}/reviews", response_model=ReviewPageOut)
 def run_reviews(
     run_id: str,
@@ -614,6 +683,18 @@ def run_out(session, run, latest_log=_LATEST_LOG_NOT_PROVIDED) -> RunOut:
     output.current_stage = stage_label(run.status, stage, event)
     output.stage_detail = event.replace("_", " ") if event else ""
     output.progress = stage_progress(run.status, stage)
+    return output
+
+
+def public_company_out(company) -> CompanyOut:
+    """Return the report identity without exposing configured source account URLs."""
+    output = CompanyOut.model_validate(company)
+    output.play_id = None
+    output.app_id = None
+    output.maps_url = None
+    output.instagram_url = None
+    output.twitter_url = None
+    output.mouthshut_url = None
     return output
 
 

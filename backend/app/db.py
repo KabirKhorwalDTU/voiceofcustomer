@@ -97,6 +97,8 @@ def ensure_lightweight_migrations() -> None:
             connection.execute(text("alter table runs add column if not exists guest_id text"))
             connection.execute(text("alter table runs add column if not exists insight_summary jsonb not null default '{}'::jsonb"))
             connection.execute(text("alter table runs add column if not exists report_snapshot jsonb not null default '{}'::jsonb"))
+            connection.execute(text("alter table runs add column if not exists public_share_token text"))
+            connection.execute(text("create unique index if not exists runs_public_share_token_unique on runs(public_share_token) where public_share_token is not null"))
             connection.execute(
                 text(
                     """
@@ -233,6 +235,9 @@ def ensure_lightweight_migrations() -> None:
                 connection.execute(text("alter table runs add column insight_summary json not null default '{}'"))
             if "report_snapshot" not in run_columns:
                 connection.execute(text("alter table runs add column report_snapshot json not null default '{}'"))
+            if "public_share_token" not in run_columns:
+                connection.execute(text("alter table runs add column public_share_token varchar"))
+            connection.execute(text("create unique index if not exists runs_public_share_token_unique on runs(public_share_token) where public_share_token is not null"))
             connection.execute(
                 text(
                     """
