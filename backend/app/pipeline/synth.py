@@ -11,8 +11,8 @@ from openpyxl import Workbook
 from app.models import Company, Review, Run, Theme
 from app.pipeline.text_quality import (
     has_firsthand_experience,
-    is_advice_seeking_without_firsthand_experience,
     is_marketplace_listing,
+    is_non_experiential_signal,
 )
 
 
@@ -93,27 +93,113 @@ _STOP_WORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have", "in", "is", "it",
     "of", "on", "or", "the", "this", "to", "with", "without", "their", "they", "your", "our", "i", "we",
 }
-_ISSUE_SYNONYMS = {
-    "network": {"signal", "coverage", "connectivity", "connection", "calls", "call", "4g", "5g", "service"},
-    "dead": {"no", "missing", "lost", "weak", "unavailable", "coverage", "signal"},
-    "zone": {"area", "location", "coverage", "signal"},
-    "slow": {"speed", "lag", "latency", "buffering", "loading"},
-    "wifi": {"wi", "router", "broadband", "fiber", "fibre", "los"},
-    "outage": {"down", "disconnect", "disconnected", "intermittent", "drop", "drops", "failure"},
-    "support": {"agent", "customer", "care", "ticket", "chat", "call", "help"},
-    "refund": {"payment", "money", "credited", "reversal", "transaction"},
-    "crash": {"freeze", "hang", "glitch", "error", "close"},
+_ISSUE_CONCEPTS = {
+    "signal": {"signal", "coverage", "reception", "bars"},
+    "network": {"network", "connectivity", "connection", "service", "signal", "coverage"},
+    "speed": {"speed", "speeds", "slow", "slower", "sluggish", "lag", "laggy", "latency", "buffering", "throttling"},
+    "internet": {"internet", "data", "broadband", "wifi", "wi-fi"},
+    "fiber": {"fiber", "fibre", "airfiber", "airfibre"},
+    "disconnect": {"disconnect", "disconnected", "disconnection", "disconnections", "outage", "outages", "down", "drops", "dropped", "los"},
+    "unstable": {"unstable", "intermittent", "fluctuating", "fluctuates", "drops", "dropped"},
+    "call": {"call", "calls", "calling", "voice"},
+    "unavailable": {"unavailable", "inaccessible", "unreachable", "unable", "cannot", "missing", "absent", "dead"},
+    "poor": {"poor", "weak", "bad", "worst", "terrible", "unusable", "unreliable", "lost", "missing"},
+    "fail": {"fail", "fails", "failed", "failure", "failing", "error", "errors", "unsuccessful", "declined"},
+    "broken": {"broken", "broke", "stopped", "notworking", "unusable"},
+    "delay": {"delay", "delays", "delayed", "waiting", "wait", "pending", "late", "long"},
+    "unresolved": {"unresolved", "unsolved"},
+    "crash": {"crash", "crashes", "crashed", "freezes", "freeze", "hangs", "hanging", "glitch", "glitches"},
+    "charge": {"charge", "charges", "charged", "overcharge", "overcharges", "overcharged", "deduct", "deducted", "debit", "debited"},
+    "unauthorized": {"unauthorized", "unapproved", "without", "consent", "permission", "didn't", "never"},
+    "hidden": {"hidden", "undisclosed", "unexpected", "surprise", "extra", "unknown"},
+    "incorrect": {"incorrect", "wrong", "mismatch", "inaccurate", "invalid", "different"},
+    "reflect": {"reflect", "reflecting", "reflected", "unposted", "unreflected"},
+    "unresponsive": {"unresponsive", "ignored", "ignoring", "stuck", "loop", "loops"},
+    "unprofessional": {"unprofessional", "rude", "impolite", "careless", "unhelpful", "misbehaved"},
+    "confusing": {"confusing", "confused", "unclear", "difficult", "hard", "complicated"},
+    "transparency": {"transparency", "unclear", "misleading", "undisclosed", "confusing"},
+    "support": {"support", "customer", "care", "help"},
+    "agent": {"agent", "agents", "human", "executive", "representative", "person"},
+    "chatbot": {"chatbot", "chatbots", "bot", "bots", "chat"},
+    "technician": {"technician", "technicians", "engineer", "engineers", "installer", "staff"},
+    "ticket": {"ticket", "tickets", "complaint", "complaints", "request", "requests"},
+    "recharge": {"recharge", "recharged", "topup", "top-up"},
+    "payment": {"payment", "payments", "transaction", "transactions", "money"},
+    "refund": {"refund", "refunded", "reversal", "reversed"},
+    "billing": {"billing", "bill", "bills", "billed", "invoice"},
+    "app": {"app", "application", "software"},
+    "login": {"login", "log", "sign", "signin"},
+    "otp": {"otp", "code", "verification"},
+    "plan": {"plan", "plans", "pack", "subscription", "validity"},
+    "installation": {"installation", "install", "installed", "setup", "activation"},
+    "cancellation": {"cancel", "cancellation", "cancelled", "discontinue", "disconnected"},
+    "router": {"router", "modem", "device"},
+    "bank": {"bank", "banking", "account", "upi"},
 }
+_ISSUE_ANCHORS = {
+    "speed", "disconnect", "unstable", "unavailable", "poor", "fail", "broken", "delay", "unresolved", "crash",
+    "unauthorized", "hidden", "incorrect", "reflect", "unresponsive", "unprofessional", "confusing", "transparency",
+}
+_GENERIC_LABEL_WORDS = {
+    "customer", "customers", "service", "services", "experience", "issues", "issue", "problem",
+    "problems", "frequent", "lack", "of", "strength", "long", "poor", "unstable", "broken",
+    "ai", "mobile", "request", "process", "difficulties", "difficulty", "and", "after", "zone", "zones",
+    "not", "no", "never", "visit", "visits", "human", "payment", "payments",
+}
+
+
+def _label_concepts(label: str) -> Tuple[set[str], set[str]]:
+    label_tokens = set(re.findall(r"[a-z0-9]+", (label or "").replace("_", " ").lower())) - _STOP_WORDS
+    matched = {concept for concept, variants in _ISSUE_CONCEPTS.items() if label_tokens & variants}
+    anchors = matched & _ISSUE_ANCHORS
+    remaining = label_tokens - _GENERIC_LABEL_WORDS - {word for variants in _ISSUE_CONCEPTS.values() for word in variants}
+    return matched, anchors | remaining
+
+
+def _issue_tokens(text: str) -> set[str]:
+    tokens = set(re.findall(r"[a-z0-9]+", text.lower()))
+    if re.search(r"\b(?:no|without|lost)\s+(?:mobile\s+)?(?:signal|coverage|network|internet|service|access|connection)\b", text, re.I):
+        tokens.add("unavailable")
+        tokens.add("poor")
+    if re.search(r"\blost\s+(?:[a-z]+\s+){0,2}(?:signal|coverage|network|connection)\b", text, re.I):
+        tokens.add("unavailable")
+        tokens.add("poor")
+    if re.search(r"\b(?:not|never|still not|hasn't|wasn't)\s+(?:been\s+)?(?:resolved|fixed|solved)\b", text, re.I):
+        tokens.add("unresolved")
+    if re.search(r"\b(?:not|never|still not|hasn't|wasn't)\s+(?:been\s+)?(?:reflected|credited|posted|received)\b", text, re.I):
+        tokens.add("unposted")
+    if re.search(r"\b(?:not|never|doesn't|didn't|won't)\s+(?:ever\s+)?(?:respond|reply|answer|resolve)\b|\bno (?:response|reply)\b", text, re.I):
+        tokens.add("unresponsive")
+    return tokens
+
+
+def _supports_label(text: str, label: str) -> bool:
+    if not text or (label or "").strip(" ._").casefold() in {"", "other", "general feedback"}:
+        return False
+    tokens = _issue_tokens(text)
+    concepts, issue_terms = _label_concepts(label)
+    matched = {concept for concept in concepts if tokens & _ISSUE_CONCEPTS[concept]}
+    # A product noun alone (for example, "fiber") does not prove an outage.
+    anchors = concepts & _ISSUE_ANCHORS
+    if anchors and not (matched & anchors):
+        return False
+    domains = concepts - _ISSUE_ANCHORS
+    if domains and not (matched & domains):
+        return False
+    unmatched_label_words = issue_terms - anchors
+    if unmatched_label_words and not (tokens & unmatched_label_words):
+        return False
+    return bool(matched or tokens & issue_terms)
 
 
 def _representative_score(review: Review, label: str, recency_window_days: int) -> float:
     text = " ".join((review.text or "").split())
-    tokens = set(re.findall(r"[a-z0-9]+", text.lower()))
-    label_tokens = set(re.findall(r"[a-z0-9]+", (label or "").replace("_", " ").lower())) - _STOP_WORDS
-    expanded = set(label_tokens)
-    for token in label_tokens:
-        expanded.update(_ISSUE_SYNONYMS.get(token, set()))
-    relevance = len(tokens & expanded) / max(1, len(expanded))
+    tokens = _issue_tokens(text)
+    concepts, issue_terms = _label_concepts(label)
+    relevance = (
+        sum(bool(tokens & _ISSUE_CONCEPTS[concept]) for concept in concepts)
+        + len(tokens & (issue_terms - concepts))
+    ) / max(1, len(concepts) + len(issue_terms - concepts))
     word_count = len(tokens)
     informative = min(1.0, word_count / 24)
     too_short_penalty = 0.25 if word_count < 5 else 0
@@ -130,7 +216,8 @@ def _representative_reviews(reviews: List[Review], label: str, recency_window_da
     candidates = [
         review for review in reviews
         if not is_marketplace_listing(review.text)
-        and (is_inquiry_label or not is_advice_seeking_without_firsthand_experience(review.text))
+        and (is_inquiry_label or not is_non_experiential_signal(review.text))
+        and _supports_label(review.text, label)
     ]
     return sorted(
         candidates,
@@ -140,7 +227,6 @@ def _representative_reviews(reviews: List[Review], label: str, recency_window_da
 
 
 def build_theme_rows(run: Run, reviews: List[Review], source_weights: Dict[str, float], recency_window_days: int) -> List[Theme]:
-    source_totals = Counter(review.source for review in reviews if review.theme)
     grouped: Dict[str, List[Review]] = defaultdict(list)
     for review in reviews:
         if review.theme:
@@ -149,20 +235,12 @@ def build_theme_rows(run: Run, reviews: List[Review], source_weights: Dict[str, 
     rows: List[Theme] = []
     total_reviews = len([review for review in reviews if review.theme]) or 1
     for theme_name, items in grouped.items():
-        per_source_counts = Counter(review.source for review in items)
-        weighted_shares = []
-        active_weight_total = 0.0
-        for source, total in source_totals.items():
-            if total <= 0:
-                continue
-            weight = float(source_weights.get(source, 1))
-            active_weight_total += weight
-            weighted_shares.append((per_source_counts.get(source, 0) / total) * weight)
-        source_normalized_frequency = sum(weighted_shares) / active_weight_total if active_weight_total else 0
         l1_share = len(items) / total_reviews
         avg_severity = 0
-        avg_recency = sum(recency_weight(review.date, recency_window_days) for review in items) / len(items)
-        score = source_normalized_frequency * avg_recency
+        # Theme rank and displayed score reflect the number of selected reviews.
+        # Per-source prevalence gave small social sources the same vote as large
+        # review sources and could invert the actual issue distribution.
+        score = 0 if theme_name.casefold() == "other" else l1_share
         top_reviews = _representative_reviews(items, theme_name, recency_window_days)
         l2_subthemes = build_l2_subtheme_rows(items, recency_window_days)
         rows.append(
@@ -188,7 +266,7 @@ def build_theme_rows(run: Run, reviews: List[Review], source_weights: Dict[str, 
             )
         )
 
-    rows.sort(key=lambda row: row.theme_score, reverse=True)
+    rows.sort(key=lambda row: (row.theme.casefold() == "other", -row.count, row.theme))
     for index, row in enumerate(rows, start=1):
         row.rank = index
     return rows
@@ -292,7 +370,7 @@ def build_summary(run: Run, reviews: List[Review], themes: List[Theme]) -> Dict[
                 "rank": theme.rank,
                 "l2_subthemes": theme.l2_subthemes,
             }
-            for theme in themes[:10]
+            for theme in [item for item in themes if item.theme.casefold() != "other"][:10]
         ],
         "completeness": run.completeness,
         "cost_estimate": run.cost_estimate,
@@ -355,8 +433,9 @@ def build_deck_spec(company: Company, run: Run, reviews: List[Review], themes: L
     goals = [str(goal) for goal in (company.analysis_goals or []) if str(goal).strip()]
     goal_sentence = "; ".join(goals) if goals else "Understand recurring customer feedback"
     headline = "No classified themes yet."
-    if themes:
-        top = themes[0]
+    issue_themes = [theme for theme in themes if theme.theme.casefold() != "other"]
+    if issue_themes:
+        top = issue_themes[0]
         headline = f"Top signal: {humanize_theme(top.theme)} at {int(round(float(top.normalized_frequency or 0) * 100))}% of classified feedback."
     source_mix = ", ".join(f"{source}: {count}" for source, count in summary["source_mix"].items()) or "No data"
     source_names = {
@@ -376,10 +455,10 @@ def build_deck_spec(company: Company, run: Run, reviews: List[Review], themes: L
     source_sentence = ", ".join(collected_sources) if collected_sources else "no completed public sources"
     theme_lines = "\n".join(
         f"- {theme.rank}. {humanize_theme(theme.theme)}: count={theme.count}, share={int(round(float(theme.normalized_frequency or 0) * 100))}%, score={theme.theme_score:.3f}"
-        for theme in themes[:8]
+        for theme in issue_themes[:8]
     )
     l2_sections = []
-    for theme in themes[:2]:
+    for theme in issue_themes[:2]:
         if not theme.l2_subthemes:
             continue
         lines = [
@@ -389,7 +468,7 @@ def build_deck_spec(company: Company, run: Run, reviews: List[Review], themes: L
         l2_sections.append(f"{humanize_theme(theme.theme)}\n" + "\n".join(lines))
     l2_breakdown = "\n\n".join(l2_sections) or "- No L2 sub-theme breakdown met the 5-review threshold."
     quote_lines = []
-    for theme in themes[:4]:
+    for theme in issue_themes[:4]:
         if theme.top_quotes:
             quote = theme.top_quotes[0]
             quote_lines.append(f"- {humanize_theme(theme.theme)}: \"{quote.get('text')}\"")

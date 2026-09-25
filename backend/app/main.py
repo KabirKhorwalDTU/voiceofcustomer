@@ -42,7 +42,9 @@ from app.repository import (
     persist_api_usage,
     query_run_reviews,
     query_public_shared_reviews,
+    queue_reclassification_from_run,
     rerun_company_from_run,
+    promote_reclassified_share,
     update_settings,
 )
 from app.schemas import (
@@ -387,6 +389,25 @@ def rerun(
         return SubmitRunResponse(run=run_out(session, run), deduped_existing=existing)
 
 
+@app.post("/api/runs/{run_id}/reclassify", response_model=SubmitRunResponse)
+def reclassify_saved_reviews(
+    run_id: str,
+    authorization: str = Header(default=""),
+    x_guest_id: str = Header(default=""),
+    x_operator_mode: str = Header(default=""),
+) -> SubmitRunResponse:
+    with session_scope() as session:
+        actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
+        try:
+            run, existing = queue_reclassification_from_run(session, run_id, actor)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="run not found") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        session.flush()
+        return SubmitRunResponse(run=run_out(session, run), deduped_existing=existing)
+
+
 @app.delete("/api/runs/{run_id}", status_code=204)
 def delete_run(
     run_id: str,
@@ -474,6 +495,24 @@ def create_share_link(
         actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
         try:
             token = create_public_share_token(session, run_id, actor)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="run not found") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        return PublicShareOut(token=token)
+
+
+@app.post("/api/runs/{run_id}/promote-share", response_model=PublicShareOut)
+def promote_saved_review_report(
+    run_id: str,
+    authorization: str = Header(default=""),
+    x_guest_id: str = Header(default=""),
+    x_operator_mode: str = Header(default=""),
+) -> PublicShareOut:
+    with session_scope() as session:
+        actor = header_actor(session, authorization, x_guest_id, x_operator_mode)
+        try:
+            token = promote_reclassified_share(session, run_id, actor)
         except KeyError:
             raise HTTPException(status_code=404, detail="run not found") from None
         except ValueError as exc:

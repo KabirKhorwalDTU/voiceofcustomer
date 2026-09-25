@@ -277,6 +277,94 @@ def rerun_company_from_run(session: Session, run_id: str, actor: Optional[Actor]
     return run, False
 
 
+def queue_reclassification_from_run(session: Session, run_id: str, actor: Optional[Actor] = None) -> Tuple[Run, bool]:
+    """Reclassify persisted feedback in a new run without scraping the sources again."""
+    source_run = get_run(session, run_id)
+    if not source_run or not can_access_run(source_run, actor, session):
+        raise KeyError("run not found")
+    if source_run.status not in {"done", "partial"}:
+        raise ValueError("only finished runs can be reclassified")
+    review_count = session.execute(
+        select(func.count(Review.id)).where(Review.run_id == source_run.id)
+    ).scalar_one()
+    if not review_count:
+        raise ValueError("the run has no saved reviews to reclassify")
+
+    active = session.execute(
+        select(Run)
+        .where(Run.company_id == source_run.company_id, Run.status.in_(ACTIVE_STATUSES))
+        .options(joinedload(Run.company))
+        .order_by(desc(Run.created_at))
+    ).scalars().first()
+    if active:
+        if active.reprocess_from_id == source_run.id and can_access_run(active, actor, session):
+            return active, True
+        raise ValueError("another analysis for this company is already in progress")
+
+    settings = get_settings(session)
+    run = Run(
+        company_id=source_run.company_id,
+        owner_user_id=source_run.owner_user_id,
+        guest_id=source_run.guest_id,
+        reprocess_from_id=source_run.id,
+        status="queued",
+        budget_cap=float(settings.per_run_budget_usd),
+        company=source_run.company,
+    )
+    session.add(run)
+    session.flush()
+    log_run_event(
+        session,
+        run,
+        stage="queue",
+        event="saved_reviews_reclassification_queued",
+        status="ok",
+        details={"source_run_id": source_run.id, "saved_reviews": review_count, "scraping": False},
+    )
+    return run, False
+
+
+def promote_reclassified_share(session: Session, run_id: str, actor: Optional[Actor] = None) -> str:
+    """Move a source report's public link only after its replacement passes basic checks."""
+    run = get_run(session, run_id)
+    if not run or not can_access_run(run, actor, session):
+        raise KeyError("run not found")
+    if not run.reprocess_from_id:
+        raise ValueError("this run was not created from saved reviews")
+    source_run = get_run(session, run.reprocess_from_id)
+    if not source_run or source_run.company_id != run.company_id or not can_access_run(source_run, actor, session):
+        raise KeyError("source run not found")
+    if run.status != "done":
+        raise ValueError("the replacement report must finish successfully")
+    summary = (run.report_snapshot or {}).get("summary") or {}
+    if not (run.report_snapshot or {}).get("version") or not summary.get("total_reviews"):
+        raise ValueError("the replacement report is incomplete")
+    if float(run.quarantine_rate or 0) > 0:
+        raise ValueError("the replacement report contains unverified classification batches")
+    if bool(summary.get("low_confidence")):
+        raise ValueError("the replacement report has low classification confidence")
+
+    if run.public_share_token:
+        return run.public_share_token
+    token = source_run.public_share_token
+    if token:
+        source_run.public_share_token = None
+        session.flush()
+        run.public_share_token = token
+    else:
+        token = create_public_share_token(session, run.id, actor)
+    log_run_event(
+        session,
+        run,
+        stage="report",
+        event="shared_report_promoted",
+        status="ok",
+        details={"source_run_id": source_run.id},
+    )
+    session.flush()
+    return token
+
+
 def delete_run_by_id(session: Session, run_id: str, actor: Optional[Actor] = None) -> bool:
     run = get_run(session, run_id)
     if not run:

@@ -95,6 +95,8 @@ def ensure_lightweight_migrations() -> None:
             connection.execute(text("create index if not exists companies_guest_id_idx on companies(guest_id)"))
             connection.execute(text("alter table runs add column if not exists owner_user_id uuid"))
             connection.execute(text("alter table runs add column if not exists guest_id text"))
+            connection.execute(text("alter table runs add column if not exists reprocess_from_id uuid"))
+            connection.execute(text("create index if not exists runs_reprocess_from_id_idx on runs(reprocess_from_id)"))
             connection.execute(text("alter table runs add column if not exists insight_summary jsonb not null default '{}'::jsonb"))
             connection.execute(text("alter table runs add column if not exists report_snapshot jsonb not null default '{}'::jsonb"))
             connection.execute(text("alter table runs add column if not exists public_share_token text"))
@@ -231,6 +233,9 @@ def ensure_lightweight_migrations() -> None:
                 connection.execute(text("alter table runs add column owner_user_id varchar"))
             if "guest_id" not in run_columns:
                 connection.execute(text("alter table runs add column guest_id varchar"))
+            if "reprocess_from_id" not in run_columns:
+                connection.execute(text("alter table runs add column reprocess_from_id varchar"))
+            connection.execute(text("create index if not exists runs_reprocess_from_id_idx on runs(reprocess_from_id)"))
             if "insight_summary" not in run_columns:
                 connection.execute(text("alter table runs add column insight_summary json not null default '{}'"))
             if "report_snapshot" not in run_columns:
