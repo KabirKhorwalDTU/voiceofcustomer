@@ -108,6 +108,33 @@ def load_stored_reviews(
     return raw_reviews, completeness, source_counts
 
 
+def completed_classification_batch(session, run_id: str, expected_batches: int) -> Tuple[ThemeSet, str]:
+    """Reuse a submitted Gemini batch after a free instance interrupts its worker."""
+    logs = list(
+        session.execute(
+            select(RunLog)
+            .where(RunLog.run_id == run_id, RunLog.stage.in_(("theme_discovery", "classification")))
+            .order_by(RunLog.created_at)
+        ).scalars()
+    )
+    theme_set: ThemeSet = {}
+    operation = ""
+    for row in logs:
+        details = row.details or {}
+        if row.stage == "theme_discovery" and row.event == "stage_completed":
+            candidate = details.get("theme_set")
+            if isinstance(candidate, dict):
+                theme_set = candidate
+        if (
+            row.stage == "classification"
+            and row.event == "llm_batch_progress"
+            and details.get("event") == "batch_submit_completed"
+            and int(details.get("total_batches") or 0) == expected_batches
+        ):
+            operation = str(details.get("operation") or "")
+    return (theme_set, operation) if theme_set and operation else ({}, "")
+
+
 def clear_run_outputs(session, run: Run) -> None:
     session.execute(delete(Theme).where(Theme.run_id == run.id))
     session.execute(delete(Review).where(Review.run_id == run.id))
@@ -517,6 +544,10 @@ class Worker:
 
             gateway = LLMGateway(config, settings, progress_callback=make_llm_progress_logger("classification"), business_name=company.name)
             with session_scope() as session:
+                prior_theme_set, prior_operation = completed_classification_batch(
+                    session, run_id, (len(cleaned) + int(settings.batch_size) - 1) // int(settings.batch_size)
+                )
+            with session_scope() as session:
                 run = session.get(Run, run_id)
                 if run is None:
                     return
@@ -530,7 +561,7 @@ class Worker:
                         model=settings.model,
                     details={"review_count": len(cleaned), "sampling": "all_selected_reviews"},
                 )
-            theme_set = await gateway.discover_themes(cleaned)
+            theme_set = prior_theme_set or await gateway.discover_themes(cleaned)
             with session_scope() as session:
                 run = session.get(Run, run_id)
                 if run is None:
@@ -560,7 +591,10 @@ class Worker:
             else:
                 classification_timeout = max(3600, ((len(cleaned) + int(settings.batch_size) - 1) // int(settings.batch_size)) * 120)
             try:
-                tags, usage = await asyncio.wait_for(gateway.classify_all(cleaned, theme_set), timeout=classification_timeout)
+                tags, usage = await asyncio.wait_for(
+                    gateway.classify_all(cleaned, theme_set, existing_operation=prior_operation),
+                    timeout=classification_timeout,
+                )
             except asyncio.TimeoutError:
                 usage = gateway.usage
                 total_batches = (len(cleaned) + int(settings.batch_size) - 1) // int(settings.batch_size)
@@ -577,7 +611,7 @@ class Worker:
 
             other_share_before_repair = other_share_from_tags(tags)
             other_share_after_repair = other_share_before_repair
-            if other_share_before_repair > 0.15:
+            if other_share_before_repair > 0.15 and not prior_operation:
                 other_hashes = {tag.review_hash for tag in tags if tag.theme == "other"}
                 other_reviews = [review for review in cleaned if review.review_hash in other_hashes]
                 with session_scope() as session:
