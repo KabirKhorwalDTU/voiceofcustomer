@@ -1,8 +1,11 @@
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import app.main as main_module
 from app.auth import Actor
 from app.main import get_or_create_report_snapshot, run_list_item_out, run_status_out
 from app.models import Base, Company, Review, Run, Theme, User
@@ -70,7 +73,12 @@ def test_terminal_legacy_report_is_snapshotted_once() -> None:
     theme = Theme(
         id="theme-1", run_id=run.id, company_id=company.id, theme="payment_failures", count=1,
         normalized_frequency=1, avg_severity=0, theme_score=1, rank=1, top_quotes=[],
-        l2_subthemes=[{"label": "card_declined", "count": 1, "score": 1, "top_quotes": []}],
+        l2_subthemes=[
+            {
+                "label": "card_declined", "count": 1, "score": 1, "top_quotes": [],
+                "action": "Trace declined payments against the provided review example.",
+            }
+        ],
     )
     session.add_all([company, run, review, theme])
     session.flush()
@@ -81,8 +89,53 @@ def test_terminal_legacy_report_is_snapshotted_once() -> None:
     assert snapshot["version"] == 1
     assert snapshot["summary"]["total_reviews"] == 1
     assert snapshot["themes"][0]["theme"] == "payment_failures"
+    assert snapshot["themes"][0]["l2_subthemes"][0]["action"].startswith("Trace declined payments")
     assert repeated == snapshot
     assert run.report_snapshot == snapshot
+
+
+def test_shared_csv_download_validates_token_and_exports_all_pages(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with SessionLocal() as session:
+        company = Company(id="company-1", name="Example", brand_keyword="example")
+        run = Run(
+            id="run-1", company_id=company.id, company=company, status="done",
+            public_share_token="share-token",
+        )
+        session.add_all([company, run])
+        session.flush()
+        session.add_all(
+            [
+                Review(
+                    id=f"review-{index}", run_id=run.id, company_id=company.id,
+                    review_hash=f"hash-{index}", source="play", date=date(2026, 8, 1),
+                    rating=1, text=f"Feedback {index}", language="en", theme="payments",
+                    l2_theme="refund_delay",
+                )
+                for index in range(205)
+            ]
+        )
+        session.commit()
+
+    @contextmanager
+    def scoped_session():
+        with SessionLocal() as session:
+            yield session
+
+    monkeypatch.setattr(main_module, "session_scope", scoped_session)
+
+    response = main_module.shared_csv_download("share-token")
+    lines = response.body.decode("utf-8").splitlines()
+
+    assert response.media_type == "text/csv"
+    assert "filename=\"tagged_reviews.csv\"" in response.headers["content-disposition"]
+    assert len(lines) == 206
+    assert "Feedback 204" in {line.split(",")[4] for line in lines[1:]}
+    with pytest.raises(main_module.HTTPException) as exc_info:
+        main_module.shared_csv_download("invalid-token")
+    assert exc_info.value.status_code == 404
 
 
 def test_egress_usage_aggregates_by_endpoint_and_warns_once_per_cycle() -> None:

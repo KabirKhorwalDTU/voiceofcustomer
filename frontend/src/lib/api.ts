@@ -108,6 +108,7 @@ export type Theme = {
     display_label?: string;
     count: number;
     score: number;
+    action?: string;
     top_quotes: Array<Record<string, unknown>>;
   }>;
 };
@@ -392,6 +393,34 @@ export const api = {
     link.click();
     // Some browsers begin reading the Blob after the click handler returns.
     // Revoking immediately can produce a no-op download without an error.
+    window.setTimeout(() => {
+      link.remove();
+      URL.revokeObjectURL(url);
+    }, 1_000);
+  },
+  async downloadSharedRun(shareToken: string, fmt: "csv") {
+    const response = await fetch(`${API_BASE}/api/shared/${encodeURIComponent(shareToken)}/downloads/${fmt}`);
+    if (!response.ok) {
+      const body = await response.text();
+      let message = body || response.statusText;
+      try {
+        const parsed = JSON.parse(body);
+        message = parsed.detail || message;
+      } catch {
+        // Keep the raw response text.
+      }
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    const disposition = response.headers.get("content-disposition") || "";
+    const filename = /filename="?([^";]+)"?/i.exec(disposition)?.[1] || `tagged_reviews.${fmt}`;
+    link.download = filename;
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
     window.setTimeout(() => {
       link.remove();
       URL.revokeObjectURL(url);

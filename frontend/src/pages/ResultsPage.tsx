@@ -171,8 +171,10 @@ export function ResultsPage() {
   const insightSummary = toSummaryRecord(results?.summary?.insight_summary);
   const feedbackRisk = toSummaryRecord(results?.summary?.feedback_risk);
   const feedbackRiskScore = Number(feedbackRisk.score || 0);
+  const executivePulsePoints = Array.isArray(insightSummary.executive_pulse_points)
+    ? (insightSummary.executive_pulse_points as unknown[]).map((point) => String(point || "").trim()).filter(Boolean).slice(0, 5)
+    : [];
   const recommendedActions = Array.isArray(insightSummary.recommended_actions) ? insightSummary.recommended_actions as Array<Record<string, unknown>> : [];
-  const firstAction = recommendedActions[0] || {};
   const selectedSources = (results?.company.selected_sources || []).map(formatSource);
   const usedSources = Object.entries(results?.summary.source_mix || {})
     .filter(([, count]) => Number(count) > 0)
@@ -240,7 +242,12 @@ export function ResultsPage() {
     setDownloading(fmt);
     setError("");
     try {
-      await api.downloadRun(results.run.id, fmt);
+      if (shareToken) {
+        if (fmt !== "csv") return;
+        await api.downloadSharedRun(shareToken, "csv");
+      } else {
+        await api.downloadRun(results.run.id, fmt);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not download the tagged reviews.");
     } finally {
@@ -363,12 +370,24 @@ export function ResultsPage() {
         <div className="executive-pulse">
           <div><p className="section-marker">Executive pulse</p><span className="tag tag-good">Evidence-led</span></div>
           <h2>{String(insightSummary.headline || (topTheme ? humanizeTheme(topTheme.theme) : "Customer signal summary"))}</h2>
-          <p>{String(insightSummary.executive_pulse || (topTheme ? humanizeTheme(topTheme.theme) + " is the clearest current signal, appearing in " + topTheme.count + " selected feedback items." : "The strongest customer themes will appear as classification completes."))}</p>
+          {executivePulsePoints.length ? (
+            <ul className="executive-pulse-points">
+              {executivePulsePoints.map((point, index) => <li key={`${index}-${point}`}>{point}</li>)}
+            </ul>
+          ) : <p>{String(insightSummary.executive_pulse || (topTheme ? humanizeTheme(topTheme.theme) + " is the clearest current signal, appearing in " + topTheme.count + " selected feedback items." : "The strongest customer themes will appear as classification completes."))}</p>}
         </div>
         <div className="feedback-risk">
           <p className="section-marker">Mission action</p>
-          <h2>{String(firstAction.title || "What to do next")}</h2>
-          <p>{String(firstAction.rationale || feedbackRisk.scope || (topTheme ? "Review the underlying evidence for " + humanizeTheme(topTheme.theme) + " before assigning an owner or response." : "No concentrated risk has been identified yet."))}</p>
+          {recommendedActions.length ? (
+            <ol className="mission-action-list">
+              {recommendedActions.slice(0, 5).map((action, index) => (
+                <li key={`${index}-${String(action.title || "action")}`}>
+                  <strong>{String(action.title || `Action ${index + 1}`)}</strong>
+                  <span>{String(action.rationale || "Review the supporting feedback before assigning a fix.")}</span>
+                </li>
+              ))}
+            </ol>
+          ) : <><h2>What to do next</h2><p>{String(feedbackRisk.scope || (topTheme ? "Review the underlying evidence for " + humanizeTheme(topTheme.theme) + " before assigning an owner or response." : "No concentrated risk has been identified yet."))}</p></>}
         </div>
       </section>
 
@@ -453,12 +472,17 @@ export function ResultsPage() {
             <button className="secondary-button" type="button" onClick={() => { setFilters(emptyFilters); setPage(1); }}>
               Clear filters
             </button>
-            {!isShared ? (["xlsx", "csv", "json"] as const).map((fmt) => (
-              <button className="secondary-button" type="button" onClick={() => downloadReviews(fmt)} disabled={Boolean(downloading)} key={fmt}>
+            {isShared ? (
+              <button className="secondary-button download-csv-button" type="button" onClick={() => downloadReviews("csv")} disabled={Boolean(downloading)}>
                 <Download size={15} />
-                {downloading === fmt ? `Preparing ${fmt}` : fmt}
+                {downloading === "csv" ? "Preparing CSV" : "Download CSV"}
               </button>
-            )) : null}
+            ) : (["csv", "xlsx", "json"] as const).map((fmt) => (
+              <button className={`secondary-button ${fmt === "csv" ? "download-csv-button" : ""}`} type="button" onClick={() => downloadReviews(fmt)} disabled={Boolean(downloading)} key={fmt}>
+                <Download size={15} />
+                {downloading === fmt ? `Preparing ${fmt}` : fmt === "csv" ? "Download CSV" : fmt}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -635,6 +659,7 @@ function ThemeDensityPanel({
                           <span style={{ width: `${Math.max(3, Math.round(Number(row.score || 0) * 100))}%` }} />
                         </div>
                         {quote ? <p>"{String(quote).slice(0, 150)}"</p> : null}
+                        {row.action ? <div className="l2-action"><strong>Action</strong><span>{String(row.action)}</span></div> : null}
                       </div>
                     );
                   })}

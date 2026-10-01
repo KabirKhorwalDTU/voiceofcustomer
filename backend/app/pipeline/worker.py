@@ -12,7 +12,7 @@ from app.models import Review, Run, RunLog, Theme
 from app.pipeline.apify import BudgetExceeded, scrape_sources
 from app.pipeline.cleaner import clean_and_dedup
 from app.pipeline.gateway import BATCH_POLL_TIMEOUT_SECONDS, LLMGateway, redact_llm_error
-from app.pipeline.synth import build_report_snapshot, build_summary, build_theme_rows
+from app.pipeline.synth import build_report_snapshot, build_summary, build_theme_rows, humanize_theme
 from app.pipeline.types import CleanReview, MAX_L2_THEMES, Tag, ThemeSet
 from app.repository import get_run_cost_rollup, get_settings, log_run_event, set_run_status
 
@@ -619,6 +619,7 @@ class Worker:
                 mission_focus = run.company.analysis_focus or ""
                 mission_evidence = {
                     "total_reviews": summary["total_reviews"],
+                    "date_range": summary.get("date_range") or {},
                     "source_mix": summary["source_mix"],
                     "feedback_risk": summary["feedback_risk"],
                     "other_share": summary["other_share"],
@@ -628,12 +629,33 @@ class Worker:
                             "display_theme": theme["display_theme"],
                             "count": theme["count"],
                             "share": theme["share"],
-                            "l2_subthemes": [
-                                {"label": item.get("display_label") or item.get("label"), "count": item.get("count"), "share": item.get("score")}
-                                for item in (theme.get("l2_subthemes") or [])[:3]
-                            ],
+                            "top_quotes": [quote.get("text", "")[:240] for quote in (theme.get("top_quotes") or [])[:2]],
                         }
                         for theme in summary["top_themes"][:5]
+                    ],
+                    "l2_action_targets": [
+                        {
+                            "id": target_id,
+                            "theme": theme.theme,
+                            "display_theme": humanize_theme(theme.theme),
+                            "label": item.get("label"),
+                            "display_label": item.get("display_label") or humanize_theme(item.get("label")),
+                            "count": item.get("count"),
+                            "share": item.get("score"),
+                            "representative_quotes": [
+                                quote.get("text", "")[:240]
+                                for quote in (item.get("top_quotes") or [])[:2]
+                                if quote.get("text")
+                            ],
+                        }
+                        for target_id, (theme, item) in enumerate(
+                            (
+                                (theme, item)
+                                for theme in theme_rows
+                                for item in (theme.l2_subthemes or [])
+                            ),
+                            start=1,
+                        )
                     ],
                 }
                 log_run_event(
@@ -654,11 +676,44 @@ class Worker:
             synthesis_gateway = LLMGateway(config, settings, progress_callback=make_llm_progress_logger("synthesis"))
             mission_summary = await synthesis_gateway.synthesize_mission(mission_goals, mission_focus, mission_evidence)
             synthesis_usage = synthesis_gateway.usage
+            l2_action_rows = mission_summary.pop("l2_subtheme_actions", [])
+            l2_actions_by_id = {
+                int(item["id"]): item["action"]
+                for item in l2_action_rows
+                if isinstance(item, dict) and str(item.get("id", "")).isdigit() and item.get("action")
+            }
+            l2_action_targets = {
+                int(target["id"]): (target["theme"], target["label"])
+                for target in mission_evidence["l2_action_targets"]
+            }
 
             with session_scope() as session:
                 run = session.get(Run, run_id)
                 if run is None:
                     return
+                actions_by_theme_and_label = {
+                    l2_action_targets[target_id]: action
+                    for target_id, action in l2_actions_by_id.items()
+                    if target_id in l2_action_targets
+                }
+                for theme in theme_rows:
+                    # Assign a fresh JSON value so SQLAlchemy persists the generated
+                    # actions alongside the frozen report snapshot.
+                    updated_l2_subthemes = [
+                        {
+                            **item,
+                            "action": actions_by_theme_and_label.get((theme.theme, item.get("label")), ""),
+                        }
+                        for item in (theme.l2_subthemes or [])
+                    ]
+                    theme.l2_subthemes = updated_l2_subthemes
+                    stored_theme = session.get(Theme, theme.id) if theme.id else None
+                    if stored_theme is not None:
+                        stored_theme.l2_subthemes = updated_l2_subthemes
+                for summary_theme in summary.get("top_themes") or []:
+                    matching_theme = next((theme for theme in theme_rows if theme.theme == summary_theme.get("theme")), None)
+                    if matching_theme:
+                        summary_theme["l2_subthemes"] = list(matching_theme.l2_subthemes or [])
                 run.insight_summary = mission_summary
                 run.cost_estimate = round(float(run.cost_estimate or 0) + synthesis_usage.cost_usd, 4)
                 log_run_event(
