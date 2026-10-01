@@ -288,9 +288,9 @@ class LLMGateway:
                     return [self._heuristic_tag(review, theme_set, quarantine=True) for review in reviews]
         return []
 
-    async def classify_all(self, reviews: List[CleanReview], theme_set: ThemeSet) -> Tuple[List[Tag], LLMUsage]:
+    async def classify_all(self, reviews: List[CleanReview], theme_set: ThemeSet, existing_operation: str = "") -> Tuple[List[Tag], LLMUsage]:
         if reviews and self.provider == "gemini" and not self._dev_mode:
-            return await self._classify_all_batch(reviews, theme_set)
+            return await self._classify_all_batch(reviews, theme_set, existing_operation=existing_operation)
         tags: List[Tag] = []
         chunks = [reviews[index : index + self.batch_size] for index in range(0, len(reviews), self.batch_size)]
         for batch_index, batch in enumerate(chunks):
@@ -308,23 +308,29 @@ class LLMGateway:
             )
         return tags, self.usage
 
-    async def _classify_all_batch(self, reviews: List[CleanReview], theme_set: ThemeSet) -> Tuple[List[Tag], LLMUsage]:
+    async def _classify_all_batch(self, reviews: List[CleanReview], theme_set: ThemeSet, existing_operation: str = "") -> Tuple[List[Tag], LLMUsage]:
         self.usage.path = "batch"
         chunks = [reviews[index : index + self.batch_size] for index in range(0, len(reviews), self.batch_size)]
-        requests = []
-        for index, batch in enumerate(chunks):
-            prompt = self._classification_prompt(batch, theme_set)
-            requests.append(self._generate_request(json.dumps(prompt, ensure_ascii=False), {"key": f"batch-{index}", "batch_index": index}))
-        await self._emit_progress("batch_submit_started", total_batches=len(chunks), requests=len(requests))
-        operation = await self._create_batch(requests, "voc-classification")
+        if existing_operation:
+            operation_name = existing_operation
+            await self._emit_progress("batch_resume_started", operation=operation_name, total_batches=len(chunks))
+        else:
+            requests = []
+            for index, batch in enumerate(chunks):
+                prompt = self._classification_prompt(batch, theme_set)
+                requests.append(self._generate_request(json.dumps(prompt, ensure_ascii=False), {"key": f"batch-{index}", "batch_index": index}))
+            await self._emit_progress("batch_submit_started", total_batches=len(chunks), requests=len(requests))
+            operation = await self._create_batch(requests, "voc-classification")
+            operation_name = operation.get("name", "")
         self.usage.batch_probe = {
             **self.usage.batch_probe,
-            "classification_operation": operation.get("name"),
+            "classification_operation": operation_name,
             "classification_timeout_seconds": BATCH_POLL_TIMEOUT_SECONDS,
             "sync_fallback": False,
         }
-        await self._emit_progress("batch_submit_completed", operation=operation.get("name"), total_batches=len(chunks))
-        responses = await self._poll_batch(operation.get("name", ""), timeout_seconds=BATCH_POLL_TIMEOUT_SECONDS)
+        if not existing_operation:
+            await self._emit_progress("batch_submit_completed", operation=operation_name, total_batches=len(chunks))
+        responses = await self._poll_batch(operation_name, timeout_seconds=BATCH_POLL_TIMEOUT_SECONDS)
         tags: List[Tag] = []
         self.usage.total_batches = len(chunks)
         for index, batch in enumerate(chunks):
@@ -788,7 +794,34 @@ class LLMGateway:
         input_tokens = int(usage.get("promptTokenCount") or 0)
         output_tokens = int(usage.get("candidatesTokenCount") or 0)
         self._record_token_usage(input_tokens, output_tokens, int(usage.get("totalTokenCount") or 0), "batch")
-        return json.loads(text)
+        try:
+            return json.loads(text)
+        except JSONDecodeError as exc:
+            if "Extra data" not in str(exc):
+                raise
+            # Gemini occasionally returns multiple JSON values on separate
+            # lines for one classification request. Salvage complete tag rows
+            # instead of quarantining the whole hundred-review batch.
+            decoder = json.JSONDecoder()
+            values: List[Any] = []
+            offset = 0
+            while offset < len(text):
+                while offset < len(text) and text[offset].isspace():
+                    offset += 1
+                if offset >= len(text):
+                    break
+                value, offset = decoder.raw_decode(text, offset)
+                values.append(value)
+            if values and all(isinstance(value, list) for value in values):
+                return [row for value in values for row in value]
+            if values and all(isinstance(value, dict) and isinstance(value.get("tags"), list) for value in values):
+                return {"tags": [row for value in values for row in value["tags"]]}
+            if values and all(
+                isinstance(value, dict) and ("row_id" in value or "review_hash" in value)
+                for value in values
+            ):
+                return values
+            raise exc
 
     async def _gemini_call(self, prompt: str) -> Any:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
@@ -867,7 +900,10 @@ class LLMGateway:
         result: ThemeSet = {}
         for theme, subthemes in theme_set.items():
             label = self._normalize_theme_label(theme)
-            if not label or label == "other":
+            if not label or label in {
+                "other", "miscellaneous", "misc", "general", "general_feedback",
+                "unclassified", "uncategorized", "uncategorised",
+            }:
                 continue
             clean_l2: List[str] = []
             for value in subthemes:

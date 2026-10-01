@@ -20,6 +20,7 @@ from app.pipeline.types import CleanReview, RawReview, Tag
 from app.pipeline.worker import (
     acquire_worker_lease,
     build_l2_action_targets,
+    completed_classification_batch,
     enforce_l2_threshold,
     is_analysis_candidate,
     load_stored_reviews,
@@ -1188,5 +1189,49 @@ def test_gateway_requires_provider_key_when_dev_fallback_disabled():
         gateway = LLMGateway(config, TestSettings())
         with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):
             await gateway.discover_themes([review])
+
+    asyncio.run(run())
+
+
+def test_batch_parser_salvages_multiple_complete_tag_arrays():
+    gateway = LLMGateway(AppConfig(gemini_api_key="test", allow_dev_llm_fallback=False), TestSettings())
+    response = {
+        "response": {
+            "candidates": [{"content": {"parts": [{"text": '[[1,"network",null]]\n[[2,"other","other"]]'}]}}],
+            "usageMetadata": {},
+        }
+    }
+    assert gateway._batch_response_json(response) == [[1, "network", None], [2, "other", "other"]]
+
+
+def test_taxonomy_discards_generic_catchall_themes():
+    gateway = LLMGateway(AppConfig(gemini_api_key="test", allow_dev_llm_fallback=False), TestSettings())
+    taxonomy = gateway._limit_theme_set({
+        "network_connectivity": ["poor_signal"],
+        "miscellaneous": ["miscellaneous"],
+        "other": ["other"],
+    })
+    assert list(taxonomy) == ["network_connectivity", "other"]
+
+
+def test_batch_resume_reads_existing_output_without_submitting_again():
+    async def run():
+        review = CleanReview(source="play", review_hash="h1", text="No signal at home", date=date.today(), rating=1, language="en")
+        gateway = LLMGateway(AppConfig(gemini_api_key="test", allow_dev_llm_fallback=False), TestSettings())
+
+        async def should_not_submit(*_args):
+            raise AssertionError("a submitted batch must not be resubmitted")
+
+        async def saved_output(operation, timeout_seconds):
+            assert operation == "batches/existing"
+            return [{"response": {"candidates": [{"content": {"parts": [{"text": '[[1,"network_connectivity","poor_signal"]]'}]}}]}}]
+
+        gateway._create_batch = should_not_submit
+        gateway._poll_batch = saved_output
+        tags, usage = await gateway.classify_all(
+            [review], {"network_connectivity": ["poor_signal"], "other": ["other"]}, existing_operation="batches/existing"
+        )
+        assert tags[0].theme == "network_connectivity"
+        assert usage.quarantined_batches == 0
 
     asyncio.run(run())
