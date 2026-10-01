@@ -14,6 +14,7 @@ from app.config import get_config
 from app.pipeline.cleaner import clean_and_dedup, normalize_text, review_hash
 from app.pipeline.gateway import LLMGateway
 from app.pipeline.gateway import redact_llm_error
+from app.pipeline.synth import build_l2_subtheme_rows
 from app.pipeline.resolver import resolve_links
 from app.pipeline.types import CleanReview, RawReview, Tag
 from app.pipeline.worker import acquire_worker_lease, enforce_l2_threshold, other_share_from_tags, recover_stale_active_runs
@@ -323,6 +324,8 @@ def test_gemini_classification_prompt_is_slim():
     assert "severity" not in json.dumps(prompt)
     assert "english_gloss" not in json.dumps(prompt)
     assert "review_hash" not in json.dumps(prompt)
+    assert "future, planned, or peer advice" in " ".join(prompt["rules"])
+    assert "listings" in " ".join(prompt["rules"])
 
 
 def test_gemini_theme_discovery_prompt_is_l1_l2():
@@ -359,6 +362,56 @@ def test_gateway_validates_l1_l2_tags_from_compact_arrays():
     assert tags[0].l2_theme == "refund_not_processed"
 
 
+def test_gateway_does_not_label_advice_question_as_experienced_network_failure():
+    review = CleanReview(
+        source="reddit",
+        review_hash="question-1",
+        text="Hey, planning to visit chikmangalur what about signal coverage for airtel?? Anyone who visited can help!! Can we make calls?",
+        date=date.today(),
+        rating=None,
+        language="en",
+    )
+    gateway = LLMGateway(get_config(), TestSettings())
+
+    tags = gateway._validate_tags(
+        [[1, "network_connectivity", "network_dead_zones"]],
+        [review],
+        {"network_connectivity": ["network_dead_zones"], "other": ["other"]},
+    )
+
+    assert tags[0].theme == "other"
+    assert tags[0].l2_theme == "other"
+    fallback_tag = gateway._heuristic_tag(
+        review,
+        {"support_quality": ["call_or_chat_quality"], "other": ["other"]},
+    )
+    assert fallback_tag.theme == "other"
+
+
+def test_gateway_routes_advice_question_to_dedicated_availability_theme_when_present():
+    review = CleanReview(
+        source="reddit",
+        review_hash="question-2",
+        text="Planning to visit this town. Anyone can help with signal coverage?",
+        date=date.today(),
+        rating=None,
+        language="en",
+    )
+    gateway = LLMGateway(get_config(), TestSettings())
+
+    tags = gateway._validate_tags(
+        [[1, "network_connectivity", "network_dead_zones"]],
+        [review],
+        {
+            "network_connectivity": ["network_dead_zones", "coverage_availability_inquiry"],
+            "other": ["other"],
+        },
+    )
+
+    assert tags[0].theme == "network_connectivity"
+    assert tags[0].l2_theme == "coverage_availability_inquiry"
+
+
 def test_l2_threshold_keeps_subthemes_only_for_parents_with_five_rows():
     theme_set = {"payments_or_refunds": ["refund_not_processed"], "login_or_kyc": ["otp_failure"], "other": ["other"]}
     tags = [
@@ -373,6 +426,91 @@ def test_l2_threshold_keeps_subthemes_only_for_parents_with_five_rows():
 
     assert all(tag.l2_theme == "refund_not_processed" for tag in tags if tag.theme == "payments_or_refunds")
     assert all(tag.l2_theme is None for tag in tags if tag.theme == "login_or_kyc")
+
+
+def test_l2_representative_quotes_prefer_experienced_issue_over_advice_question():
+    reviews = [
+        Review(
+            text="Hey, planning to visit chikmangalur what about signal coverage for airtel?? Anyone who visited can help!! Can we make calls?",
+            theme="network_connectivity",
+            l2_theme="network_dead_zones",
+            date=date.today(),
+            rating=None,
+        ),
+        Review(
+            text="I lost Airtel signal for three hours on this route and could not place calls until I reached the next town.",
+            theme="network_connectivity",
+            l2_theme="network_dead_zones",
+            date=date.today(),
+            rating=None,
+        ),
+        Review(
+            text="My network had no coverage near the station yesterday; calls dropped until I moved closer to the highway.",
+            theme="network_connectivity",
+            l2_theme="network_dead_zones",
+            date=date.today(),
+            rating=None,
+        ),
+        Review(
+            text="Anyone can help me plan a trip? I am looking for advice on whether the signal works there.",
+            theme="network_connectivity",
+            l2_theme="network_dead_zones",
+            date=date.today(),
+            rating=None,
+        ),
+        Review(
+            text="I have no signal inside my home and have to walk outside to make a call.",
+            theme="network_connectivity",
+            l2_theme="network_dead_zones",
+            date=date.today(),
+            rating=None,
+        ),
+    ]
+
+    l2_row = build_l2_subtheme_rows(reviews, recency_window_days=365)[0]
+    quotes = [quote["text"] for quote in l2_row["top_quotes"]]
+
+    assert l2_row["count"] == 5
+    assert len(quotes) == 3
+    assert all("planning to visit" not in quote.lower() for quote in quotes)
+    assert all("looking for advice" not in quote.lower() for quote in quotes)
+    assert any("I lost Airtel signal" in quote for quote in quotes)
+
+
+def test_l2_advice_only_cluster_has_no_failure_quote():
+    reviews = [
+        Review(
+            text="Planning to visit this town. Anyone can help with signal coverage?",
+            theme="network_connectivity",
+            l2_theme="network_dead_zones",
+            date=date.today(),
+            rating=None,
+        )
+        for _ in range(5)
+    ]
+
+    l2_row = build_l2_subtheme_rows(reviews, recency_window_days=365)[0]
+
+    assert l2_row["count"] == 5
+    assert l2_row["top_quotes"] == []
+
+
+def test_l2_marketplace_listings_are_not_selected_as_customer_evidence():
+    reviews = [
+        Review(
+            text="Want to sell S24 256gb lavender, one year old, original box and charger included.",
+            theme="other",
+            l2_theme="other",
+            date=date.today(),
+            rating=None,
+        )
+        for _ in range(5)
+    ]
+
+    l2_row = build_l2_subtheme_rows(reviews, recency_window_days=365)[0]
+
+    assert l2_row["count"] == 5
+    assert l2_row["top_quotes"] == []
 
 
 def test_other_share_counts_l1_other_rows():
@@ -427,12 +565,72 @@ def test_mission_synthesis_returns_five_points_actions_and_evidence_grounded_l2_
 
     assert len(fallback["executive_pulse_points"]) == 5
     assert len(fallback["recommended_actions"]) == 5
-    assert "5 Refund not processed reports" in fallback["l2_subtheme_actions"][0]["action"]
-    assert "Refund never arrived" in fallback["l2_subtheme_actions"][0]["action"]
+    assert "Trace affected transactions" in fallback["l2_subtheme_actions"][0]["action"]
+    assert "track successful resolution" in fallback["l2_subtheme_actions"][0]["action"]
+    assert "Refund never arrived" not in fallback["l2_subtheme_actions"][0]["action"]
     assert len(validated["executive_pulse_points"]) == 5
     assert len(validated["recommended_actions"]) == 5
     assert validated["l2_subtheme_actions"] == [{"id": 1, "action": "Trace refund handling for these reports."}]
     assert validated["executive_pulse"]
+
+
+def test_mission_synthesis_replaces_quote_stitched_l2_action_with_specific_fallback():
+    gateway = LLMGateway(get_config(), TestSettings())
+    evidence = {
+        "l2_action_targets": [
+            {
+                "id": 1,
+                "theme": "network_connectivity",
+                "label": "network_dead_zones",
+                "display_label": "Network dead zones.",
+                "count": 26,
+                "representative_quotes": ["Hey, planning to visit chikmangalur what about signal coverage for airtel?? Anyone who visited can help!! Can we make calls?"],
+            }
+        ]
+    }
+
+    result = gateway._validate_mission_synthesis(
+        {
+            "l2_subtheme_actions": [
+                {
+                    "id": 1,
+                    "action": "Check whether the 26 Network dead zones reports share a failure, starting with ‘Hey, planning to visit chikmangalur what about signal coverage for airtel?? Anyone who visited can h’, then test a focused fix.",
+                }
+            ]
+        },
+        [],
+        "",
+        evidence,
+    )
+
+    action = result["l2_subtheme_actions"][0]["action"]
+    assert action == "Map reported locations and times against coverage and outage data; field-test repeated gaps and track call completion and dropped-call rates."
+    assert "chikmangalur" not in action.lower()
+    assert "starting with" not in action.lower()
+
+
+def test_mission_synthesis_handles_availability_inquiry_without_claiming_network_failure():
+    gateway = LLMGateway(get_config(), TestSettings())
+
+    summary = gateway._deterministic_mission_synthesis(
+        [],
+        "",
+        {
+            "l2_action_targets": [
+                {
+                    "id": 1,
+                    "theme": "network_connectivity",
+                    "label": "coverage_availability_inquiry",
+                    "display_label": "Coverage availability inquiry",
+                    "count": 26,
+                }
+            ]
+        },
+    )
+
+    action = summary["l2_subtheme_actions"][0]["action"]
+    assert "publish a clear availability answer" in action
+    assert "field-test repeated gaps" not in action
 
 
 def test_mission_synthesis_empty_evidence_still_returns_safe_report_shape():

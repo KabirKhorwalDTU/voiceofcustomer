@@ -3,11 +3,17 @@ import csv
 from datetime import date, datetime, timezone
 from io import BytesIO, StringIO
 import json
+import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from openpyxl import Workbook
 
 from app.models import Company, Review, Run, Theme
+from app.pipeline.text_quality import (
+    has_firsthand_experience,
+    is_advice_seeking_without_firsthand_experience,
+    is_marketplace_listing,
+)
 
 
 def recency_weight(review_date: Optional[date], window_days: int) -> float:
@@ -83,6 +89,56 @@ def clean_theme_words(words: str) -> str:
     return " ".join(cleaned.split())
 
 
+_STOP_WORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have", "in", "is", "it",
+    "of", "on", "or", "the", "this", "to", "with", "without", "their", "they", "your", "our", "i", "we",
+}
+_ISSUE_SYNONYMS = {
+    "network": {"signal", "coverage", "connectivity", "connection", "calls", "call", "4g", "5g", "service"},
+    "dead": {"no", "missing", "lost", "weak", "unavailable", "coverage", "signal"},
+    "zone": {"area", "location", "coverage", "signal"},
+    "slow": {"speed", "lag", "latency", "buffering", "loading"},
+    "wifi": {"wi", "router", "broadband", "fiber", "fibre", "los"},
+    "outage": {"down", "disconnect", "disconnected", "intermittent", "drop", "drops", "failure"},
+    "support": {"agent", "customer", "care", "ticket", "chat", "call", "help"},
+    "refund": {"payment", "money", "credited", "reversal", "transaction"},
+    "crash": {"freeze", "hang", "glitch", "error", "close"},
+}
+
+
+def _representative_score(review: Review, label: str, recency_window_days: int) -> float:
+    text = " ".join((review.text or "").split())
+    tokens = set(re.findall(r"[a-z0-9]+", text.lower()))
+    label_tokens = set(re.findall(r"[a-z0-9]+", (label or "").replace("_", " ").lower())) - _STOP_WORDS
+    expanded = set(label_tokens)
+    for token in label_tokens:
+        expanded.update(_ISSUE_SYNONYMS.get(token, set()))
+    relevance = len(tokens & expanded) / max(1, len(expanded))
+    word_count = len(tokens)
+    informative = min(1.0, word_count / 24)
+    too_short_penalty = 0.25 if word_count < 5 else 0
+    first_person_bonus = 0.15 if has_firsthand_experience(text) else 0
+    rating_bonus = 0.08 if review.rating in {1, 2} else 0
+    recency_bonus = 0.05 * recency_weight(review.date, recency_window_days)
+    return relevance * 2 + informative * 0.5 + first_person_bonus + rating_bonus + recency_bonus - too_short_penalty
+
+
+def _representative_reviews(reviews: List[Review], label: str, recency_window_days: int, limit: int = 3) -> List[Review]:
+    # Advice requests describe a possible need, not a customer's experienced failure.
+    # Keep them out of the evidence quotes even if an older taxonomy placed them in an issue cluster.
+    is_inquiry_label = any(term in (label or "").casefold() for term in ("inquiry", "question", "availability"))
+    candidates = [
+        review for review in reviews
+        if not is_marketplace_listing(review.text)
+        and (is_inquiry_label or not is_advice_seeking_without_firsthand_experience(review.text))
+    ]
+    return sorted(
+        candidates,
+        key=lambda review: _representative_score(review, label, recency_window_days),
+        reverse=True,
+    )[:limit]
+
+
 def build_theme_rows(run: Run, reviews: List[Review], source_weights: Dict[str, float], recency_window_days: int) -> List[Theme]:
     source_totals = Counter(review.source for review in reviews if review.theme)
     grouped: Dict[str, List[Review]] = defaultdict(list)
@@ -107,7 +163,7 @@ def build_theme_rows(run: Run, reviews: List[Review], source_weights: Dict[str, 
         avg_severity = 0
         avg_recency = sum(recency_weight(review.date, recency_window_days) for review in items) / len(items)
         score = source_normalized_frequency * avg_recency
-        top_reviews = sorted(items, key=lambda item: recency_weight(item.date, recency_window_days), reverse=True)[:3]
+        top_reviews = _representative_reviews(items, theme_name, recency_window_days)
         l2_subthemes = build_l2_subtheme_rows(items, recency_window_days)
         rows.append(
             Theme(
@@ -153,7 +209,7 @@ def build_l2_subtheme_rows(reviews: List[Review], recency_window_days: int) -> L
     rows = []
     parent_total = len(reviews)
     for label, items in grouped.items():
-        top_reviews = sorted(items, key=lambda item: recency_weight(item.date, recency_window_days), reverse=True)[:3]
+        top_reviews = _representative_reviews(items, label, recency_window_days)
         rows.append(
             {
                 "label": label,
