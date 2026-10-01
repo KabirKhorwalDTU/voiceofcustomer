@@ -527,6 +527,29 @@ def shared_reviews(
         return ReviewPageOut(items=rows, total=total, page=page, page_size=page_size, pages=max(1, math.ceil(total / page_size)))
 
 
+@app.get("/api/shared/{token}/downloads/csv")
+def shared_csv_download(token: str) -> Response:
+    with session_scope() as session:
+        # Validate the opaque share token before reading any review rows.
+        if not get_public_shared_run(session, token):
+            raise HTTPException(status_code=404, detail="shared report not found")
+        reviews = []
+        page = 1
+        total = 0
+        while page == 1 or len(reviews) < total:
+            rows, total = query_public_shared_reviews(session, token, page=page, page_size=100)
+            if not rows:
+                break
+            reviews.extend(rows)
+            page += 1
+        body, media_type, filename = export_reviews(reviews, "csv")
+        return Response(
+            content=body,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+
 @app.get("/api/runs/{run_id}/reviews", response_model=ReviewPageOut)
 def run_reviews(
     run_id: str,

@@ -216,12 +216,20 @@ class LLMGateway:
                 "Use only the supplied evidence; do not invent facts or metrics.",
                 "Answer the selected mission and optional focus directly.",
                 "Keep every string concise and owner-readable.",
+                "Return exactly five executive_pulse_points and exactly five recommended_actions.",
+                "For every l2_action_target, return one practical l2_subtheme_action using its label, count, and representative quote when present.",
+                "Phrase actions as checks or experiments when the evidence does not establish a cause; do not claim a fix will work.",
                 "Return strict JSON only.",
             ],
             "output": {
                 "headline": "max 110 characters",
-                "executive_pulse": "max 420 characters",
-                "recommended_actions": [{"title": "max 60 characters", "rationale": "max 150 characters"}],
+                "executive_pulse_points": ["exactly 5 concise evidence-backed points, max 160 characters each"],
+                "recommended_actions": [
+                    {"title": "max 60 characters", "rationale": "max 150 characters"}
+                ],
+                "l2_subtheme_actions": [
+                    {"id": "copy the target id", "action": "max 240 characters"}
+                ],
             },
         }
         if self._dev_mode:
@@ -372,19 +380,77 @@ class LLMGateway:
     def _validate_mission_synthesis(self, data: Any, goals: List[str], focus: str, evidence: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(data, dict):
             return self._deterministic_mission_synthesis(goals, focus, evidence)
+        fallback = self._deterministic_mission_synthesis(goals, focus, evidence)
+
+        pulse_points = []
+        raw_points = data.get("executive_pulse_points")
+        for item in raw_points if isinstance(raw_points, list) else []:
+            point = " ".join(str(item or "").split())[:160]
+            if point and point.casefold() not in {value.casefold() for value in pulse_points}:
+                pulse_points.append(point)
+            if len(pulse_points) == 5:
+                break
+        fallback_points = fallback["executive_pulse_points"]
+        for point in fallback_points:
+            if len(pulse_points) == 5:
+                break
+            if point.casefold() not in {value.casefold() for value in pulse_points}:
+                pulse_points.append(point)
+
         actions = []
-        for item in (data.get("recommended_actions") or [])[:3]:
+        seen_titles = set()
+        raw_actions = data.get("recommended_actions")
+        for item in raw_actions if isinstance(raw_actions, list) else []:
             if not isinstance(item, dict):
                 continue
             title = " ".join(str(item.get("title") or "").split())[:60]
             rationale = " ".join(str(item.get("rationale") or "").split())[:150]
-            if title:
+            if title and title.casefold() not in seen_titles:
                 actions.append({"title": title, "rationale": rationale})
-        fallback = self._deterministic_mission_synthesis(goals, focus, evidence)
+                seen_titles.add(title.casefold())
+            if len(actions) == 5:
+                break
+        for item in fallback["recommended_actions"]:
+            if len(actions) == 5:
+                break
+            if item["title"].casefold() not in seen_titles:
+                actions.append(item)
+                seen_titles.add(item["title"].casefold())
+
+        targets = evidence.get("l2_action_targets") or []
+        fallback_l2_actions = {
+            int(item["id"]): item["action"]
+            for item in fallback["l2_subtheme_actions"]
+            if str(item.get("id", "")).isdigit()
+        }
+        model_l2_actions = {}
+        raw_l2_actions = data.get("l2_subtheme_actions")
+        for item in raw_l2_actions if isinstance(raw_l2_actions, list) else []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                target_id = int(item.get("id"))
+            except (TypeError, ValueError):
+                continue
+            action = " ".join(str(item.get("action") or "").split())[:240]
+            if action:
+                model_l2_actions.setdefault(target_id, action)
+        l2_actions = [
+            {
+                "id": int(target["id"]),
+                "action": model_l2_actions.get(int(target["id"])) or fallback_l2_actions.get(int(target["id"]), ""),
+            }
+            for target in targets
+            if str(target.get("id", "")).isdigit()
+        ]
+        points = pulse_points[:5]
         return {
             "headline": " ".join(str(data.get("headline") or fallback["headline"]).split())[:110],
-            "executive_pulse": " ".join(str(data.get("executive_pulse") or fallback["executive_pulse"]).split())[:420],
-            "recommended_actions": actions or fallback["recommended_actions"],
+            "executive_pulse_points": points,
+            # Keep the prior field for older API clients and saved presentations.
+            "executive_pulse": " ".join(points)[:420],
+            "recommended_actions": actions[:5],
+            "l2_subtheme_actions": l2_actions,
             "mission": {"goals": goals[:3], "focus": (focus or "")[:600]},
         }
 
@@ -392,13 +458,86 @@ class LLMGateway:
         themes = evidence.get("top_themes") or []
         lead = themes[0] if themes else {}
         label = str(lead.get("display_theme") or lead.get("theme") or "Customer feedback")
-        share = round(float(lead.get("share") or 0) * 100)
-        mission = goals[0] if goals else "Customer feedback review"
-        focus_line = f" Focus requested: {focus.strip()[:160]}." if focus and focus.strip() else ""
+        try:
+            share = round(float(lead.get("share") or 0) * 100)
+        except (TypeError, ValueError):
+            share = 0
+        source_mix = evidence.get("source_mix") or {}
+        source_count = len([source for source, count in source_mix.items() if int(count or 0) > 0])
+        date_range = evidence.get("date_range") or {}
+        start, end = date_range.get("start"), date_range.get("end")
+        count = lead.get("count")
+        risk = evidence.get("feedback_risk") or {}
+        total_reviews = evidence.get("total_reviews")
+        if total_reviews is None:
+            pulse_total = "Selected feedback count is unavailable in this snapshot."
+        else:
+            pulse_total = f"Selected feedback: {int(total_reviews)} reviews."
+        if source_count:
+            pulse_sources = f"Listening posts: {source_count} with feedback; largest is {max(source_mix, key=lambda key: int(source_mix.get(key) or 0))}."
+        else:
+            pulse_sources = "Listening post counts are unavailable in this snapshot."
+        pulse_period = f"Feedback period: {start} to {end}." if start and end else "Feedback dates are unavailable in this snapshot."
+        if themes:
+            pulse_theme = f"Top signal: {label} ({int(count or 0)} reviews, {share}% of classified feedback)."
+        else:
+            pulse_theme = "No classified issue themes are available in this snapshot."
+        if risk.get("score") is not None:
+            pulse_risk = f"Feedback risk: {int(risk['score'])}/100 ({risk.get('evidence_grade') or 'grade unavailable'})."
+        else:
+            pulse_risk = "Feedback risk score is unavailable in this snapshot."
+        pulse_points = [pulse_total, pulse_sources, pulse_period, pulse_theme, pulse_risk]
+
+        recommended_actions = []
+        for theme in themes[:5]:
+            theme_label = str(theme.get("display_theme") or theme.get("theme") or "Customer feedback")
+            theme_count = int(theme.get("count") or 0)
+            quotes = theme.get("top_quotes") or []
+            quote_note = "Review its representative quotes" if quotes else "Review the available tagged feedback"
+            recommended_actions.append(
+                {
+                    "title": f"Validate {theme_label}"[:60],
+                    "rationale": f"{quote_note} across the {theme_count} tagged reports before assigning a fix."[:150],
+                }
+            )
+        follow_up_steps = [
+            ("Trace the failure", "Compare the available examples to locate a repeated point in the customer journey."),
+            ("Assign an owner", "Have one owner verify the evidence and scope a focused corrective test."),
+            ("Track the signal", "Recheck this theme in the next feedback period and compare its review count."),
+            ("Review source coverage", "Compare the source counts before treating this signal as representative."),
+            ("Recheck classification", "Inspect the mapped examples and correct labels that do not fit the feedback."),
+        ]
+        suffix_index = 0
+        while len(recommended_actions) < 5:
+            title, rationale = follow_up_steps[suffix_index % len(follow_up_steps)]
+            if themes:
+                rationale = f"For {label}, {rationale[0].lower()}{rationale[1:]}"
+            recommended_actions.append({"title": title[:60], "rationale": rationale[:150]})
+            suffix_index += 1
+        recommended_actions = recommended_actions[:5]
+
+        l2_subtheme_actions = []
+        for target in evidence.get("l2_action_targets") or []:
+            l2_label = str(target.get("display_label") or target.get("label") or "this sub-issue")
+            l2_count = int(target.get("count") or 0)
+            quote_rows = target.get("representative_quotes") or []
+            quote = " ".join(str(quote_rows[0] or "").split())[:100] if quote_rows else ""
+            if quote:
+                action = f"Check whether the {l2_count} {l2_label} reports share a failure, starting with ‘{quote}’, then test a focused fix."
+            else:
+                action = f"Review the {l2_count} {l2_label} reports, isolate any shared failure point, and test a focused fix."
+            l2_subtheme_actions.append({"id": target.get("id"), "action": action[:240]})
+
         return {
-            "headline": f"{label} is the strongest signal ({share}% of selected feedback).",
-            "executive_pulse": f"For {mission.lower()}, start with the recurring issue behind {label.lower()} and validate it against the supporting customer quotes.{focus_line}",
-            "recommended_actions": [{"title": f"Investigate {label}", "rationale": "Review the supporting quotes, isolate the repeated failure point, and assign one owner for a concrete fix."}],
+            "headline": (
+                f"{label} is the strongest signal ({share}% of selected feedback)."
+                if themes
+                else "No classified customer feedback themes are available."
+            ),
+            "executive_pulse_points": pulse_points,
+            "executive_pulse": " ".join(pulse_points)[:420],
+            "recommended_actions": recommended_actions,
+            "l2_subtheme_actions": l2_subtheme_actions,
             "mission": {"goals": goals[:3], "focus": (focus or "")[:600]},
         }
 

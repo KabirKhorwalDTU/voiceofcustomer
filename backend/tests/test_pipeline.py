@@ -385,6 +385,68 @@ def test_other_share_counts_l1_other_rows():
     assert other_share_from_tags(tags) == pytest.approx(2 / 3)
 
 
+def test_mission_synthesis_returns_five_points_actions_and_evidence_grounded_l2_fallbacks():
+    gateway = LLMGateway(get_config(), TestSettings())
+    evidence = {
+        "total_reviews": 8,
+        "source_mix": {"play": 8},
+        "date_range": {"start": "2026-08-01", "end": "2026-08-31"},
+        "feedback_risk": {"score": 78, "evidence_grade": "early"},
+        "top_themes": [
+            {
+                "theme": "payments_or_refunds",
+                "display_theme": "Payments & refunds.",
+                "count": 8,
+                "share": 1.0,
+                "top_quotes": ["Refund never arrived after payment."],
+            }
+        ],
+        "l2_action_targets": [
+            {
+                "id": 1,
+                "theme": "payments_or_refunds",
+                "label": "refund_not_processed",
+                "display_label": "Refund not processed",
+                "count": 5,
+                "representative_quotes": ["Refund never arrived after payment."],
+            }
+        ],
+    }
+
+    fallback = gateway._deterministic_mission_synthesis(["Reduce refund friction"], "", evidence)
+    validated = gateway._validate_mission_synthesis(
+        {
+            "executive_pulse_points": ["The supplied evidence has eight reviews."],
+            "recommended_actions": [{"title": "Check refunds", "rationale": "Review the eight tagged examples."}],
+            "l2_subtheme_actions": [{"id": 1, "action": "Trace refund handling for these reports."}],
+        },
+        ["Reduce refund friction"],
+        "",
+        evidence,
+    )
+
+    assert len(fallback["executive_pulse_points"]) == 5
+    assert len(fallback["recommended_actions"]) == 5
+    assert "5 Refund not processed reports" in fallback["l2_subtheme_actions"][0]["action"]
+    assert "Refund never arrived" in fallback["l2_subtheme_actions"][0]["action"]
+    assert len(validated["executive_pulse_points"]) == 5
+    assert len(validated["recommended_actions"]) == 5
+    assert validated["l2_subtheme_actions"] == [{"id": 1, "action": "Trace refund handling for these reports."}]
+    assert validated["executive_pulse"]
+
+
+def test_mission_synthesis_empty_evidence_still_returns_safe_report_shape():
+    gateway = LLMGateway(get_config(), TestSettings())
+
+    summary = gateway._validate_mission_synthesis({}, [], "", {})
+
+    assert len(summary["executive_pulse_points"]) == 5
+    assert len(summary["recommended_actions"]) == 5
+    assert summary["l2_subtheme_actions"] == []
+    assert all(summary["executive_pulse_points"])
+    assert all(action["title"] and action["rationale"] for action in summary["recommended_actions"])
+
+
 def test_gemini_sync_cost_uses_flash_lite_token_pricing():
     gateway = LLMGateway(get_config(), TestSettings())
 

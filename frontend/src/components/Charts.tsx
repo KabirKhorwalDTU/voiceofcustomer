@@ -31,18 +31,25 @@ export function ResultsCharts({ results }: { results: Results }) {
   const ratingEntries = entries(results.summary.rating_distribution);
   const sourceEntries = entries(results.summary.source_mix);
   const volumeEntries = entries(results.summary.volume_over_time);
-  const sourceQuality = (results.summary.source_quality || []) as Array<{ source: string; rows: number; useful_rows: number }>;
+  const sourceQuality = Array.isArray(results.summary.source_quality)
+    ? results.summary.source_quality as Array<{ source: string; rows: number; useful_rows: number; non_other_pct?: number }>
+    : [];
+  const sourceYield = sourceQuality
+    .filter((row) => typeof row.non_other_pct === "number" && Number.isFinite(row.non_other_pct) && Number(row.rows) > 0)
+    .map((row) => ({ source: formatSource(row.source), yield: Number(row.non_other_pct) * 100 }))
+    .sort((a, b) => b.yield - a.yield);
   const hasSourceComparison = sourceQuality.length > 1 || sourceEntries.length > 1;
+  const hasSourceYield = sourceYield.length > 0;
   const hasVolumeTrend = volumeEntries.length > 1;
   const hasRatings = ratingEntries.length > 0;
-  const panelCount = [hasRatings, hasVolumeTrend, hasSourceComparison].filter(Boolean).length;
+  const panelCount = [hasRatings, hasVolumeTrend, hasSourceComparison, hasSourceYield].filter(Boolean).length;
 
   if (!panelCount) return null;
 
   return (
     <section className="section-block feedback-patterns">
       <div className="section-title-row">
-        <div><h2>Feedback patterns</h2><p>Three complementary views of the selected customer feedback, without duplicating the theme map.</p></div>
+        <div><h2>Feedback patterns</h2><p>See the feedback mix, momentum, source contribution, and which listening posts return the most actionable signal.</p></div>
       </div>
       <div className={"chart-grid compact-chart-grid panels-" + panelCount}>
         {hasRatings ? (
@@ -82,6 +89,26 @@ export function ResultsCharts({ results }: { results: Results }) {
                   options={compactOptions}
                 />
               )}
+            </div>
+          </section>
+        ) : null}
+        {hasSourceYield ? (
+          <section className="chart-panel">
+            <h3>Actionable signal yield by source</h3>
+            <p>Share of feedback mapped to a specific issue theme; higher yield means a more actionable listening post.</p>
+            <div className="chart-canvas" style={{ height: Math.max(210, Math.min(340, sourceYield.length * 44)) }}>
+              <Bar
+                data={{
+                  labels: sourceYield.map((row) => row.source),
+                  datasets: [{ label: "Actionable feedback", data: sourceYield.map((row) => row.yield), backgroundColor: palette[0] }],
+                }}
+                options={{
+                  ...compactOptions,
+                  indexAxis: "y" as const,
+                  plugins: { legend: { display: false } },
+                  scales: { x: { min: 0, max: 100, ticks: { stepSize: 25, callback: (value) => `${value}%` } } },
+                }}
+              />
             </div>
           </section>
         ) : null}
