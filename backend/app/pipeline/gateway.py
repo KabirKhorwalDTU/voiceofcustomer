@@ -121,13 +121,20 @@ DISCOVERY_CHUNK_SIZE = 1000
 
 
 class LLMGateway:
-    def __init__(self, config: AppConfig, settings: Any, progress_callback: Optional[ProgressCallback] = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        settings: Any,
+        progress_callback: Optional[ProgressCallback] = None,
+        business_name: str = "",
+    ) -> None:
         self.config = config
         self.provider = settings.provider
         self.model = settings.model
         self.batch_size = settings.batch_size
         self.usage = LLMUsage()
         self._progress_callback = progress_callback
+        self.business_name = business_name.strip()
 
     async def _emit_progress(self, event: str, **details: Any) -> None:
         payload = {"event": event, **details}
@@ -383,13 +390,15 @@ class LLMGateway:
     def _theme_discovery_prompt(self, sample: List[CleanReview]) -> Dict[str, Any]:
         return {
             "task": "discover_l1_l2_taxonomy",
+            "business_name": self.business_name,
             "max_l1_themes": MAX_L1_THEMES,
             "max_l2_subthemes_per_l1": MAX_L2_THEMES,
             "language": "Hindi/Hinglish/English allowed",
             "rules": [
                 "Do not use complaint/feature_request/praise buckets.",
-                "Create specific, human-meaningful L1 issue themes for low-rated customer feedback.",
+                "Create specific, human-meaningful L1 issue themes for feedback about the named business, not its competitors.",
                 "For each L1, create concrete L2 sub-issues users are describing.",
+                "Base every L2 on direct complaints seen in multiple reviews; do not infer an outage, charge, delay, or failed transaction from a question, comparison, or promotion.",
                 "Do not turn future-use questions, peer-advice requests, sales listings, or unrelated discussion into experienced failures.",
                 "If a repeated signal is only a question about future coverage or availability, label it as an inquiry rather than a coverage failure.",
                 "Prefer a specific nearest L1 over other; reserve other for isolated or unclear feedback.",
@@ -614,32 +623,38 @@ class LLMGateway:
     def _classification_prompt(self, reviews: List[CleanReview], theme_set: ThemeSet) -> Dict[str, Any]:
         return {
             "task": "classify_reviews_l1_l2",
+            "business_name": self.business_name,
             "rules": [
                 "Use only the supplied L1 themes and their L2 sub-issues.",
-                "Prefer the nearest specific L1 theme over other.",
-                "Use other only if no supplied L1 reasonably fits.",
+                "Classify the customer's stated experience with the named business. A competitor's issue or incidental brand mention is not evidence about this business.",
+                "Choose an L1 only when the review supports that theme; otherwise use other.",
+                "Choose an L2 only when the review explicitly supports that precise sub-issue; use null if the L1 fits but no supplied L2 does.",
+                "Do not infer a service failure from a question, comparison, promotion, or a generic negative opinion.",
+                "Examples: a question about future signal coverage is not poor signal; a provider comparison is not a fiber disconnection; asking for a bill breakdown is not a hidden charge.",
                 "A question asking for future, planned, or peer advice is not an experienced failure; use a supplied inquiry or availability theme if present, otherwise use other.",
                 "Do not classify listings, promotions, or unrelated discussion as customer feedback about a product or service issue.",
                 "Return strict JSON only.",
                 "Return one row per input row.",
-                "Output compact arrays in this exact order: [row_id, l1_theme, l2_theme].",
+                "Output compact arrays in this exact order: [row_id, l1_theme, l2_theme_or_null].",
             ],
             "theme_set": self._theme_set_payload(theme_set),
             "reviews": [self._review_prompt_row(index, review) for index, review in enumerate(reviews, start=1)],
             "row_format": "[row_id, rating, text]",
-            "output_format": "[row_id, l1_theme, l2_theme]",
+            "output_format": "[row_id, l1_theme, l2_theme_or_null]",
         }
 
     def _theme_repair_prompt(self, other_reviews: List[CleanReview], theme_set: ThemeSet) -> Dict[str, Any]:
         return {
             "task": "repair_l1_l2_taxonomy_for_other_rows",
+            "business_name": self.business_name,
             "max_l1_themes": MAX_L1_THEMES,
             "max_l2_subthemes_per_l1": MAX_L2_THEMES,
             "current_theme_set": self._theme_set_payload(theme_set),
             "rules": [
-                "The current classifier put these rows into other; find missing specific L1 themes or L2 sub-issues.",
+                "The current classifier put these rows into other; find missing specific L1 themes or L2 sub-issues only for genuine experiences with the named business.",
                 "Preserve useful existing labels, merge duplicates, and stay within the limits.",
                 "Prefer adding a specific L1 only when several rows share the same issue pattern.",
+                "Leave unclear, off-brand, promotional, or non-experiential rows in other; do not invent themes to reduce the other count.",
                 "Keep labels concise snake_case.",
                 "Return strict JSON only.",
             ],
@@ -895,10 +910,15 @@ class LLMGateway:
             theme = self._normalize_theme_label(item.get("theme") or item.get("l1_theme") or "other")
             if theme not in theme_set:
                 theme = "other"
-            l2_theme = self._normalize_theme_label(item.get("l2_theme") or item.get("subtheme") or item.get("l2") or "")
+            raw_l2 = item.get("l2_theme") or item.get("subtheme") or item.get("l2")
+            l2_theme = self._normalize_theme_label(raw_l2) if raw_l2 else None
             allowed_l2 = theme_set.get(theme, [])
-            if not l2_theme or l2_theme not in set(allowed_l2):
-                l2_theme = allowed_l2[0] if allowed_l2 else "other"
+            if theme == "other":
+                l2_theme = "other"
+            elif l2_theme not in allowed_l2:
+                # A broad L1 is useful; an invented or absent L2 must not be
+                # silently relabeled as the taxonomy's first sub-issue.
+                l2_theme = None
             tag = Tag(
                 review_hash=review.review_hash,
                 theme=theme,

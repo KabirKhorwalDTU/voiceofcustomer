@@ -17,7 +17,15 @@ from app.pipeline.gateway import redact_llm_error
 from app.pipeline.synth import build_l2_subtheme_rows
 from app.pipeline.resolver import resolve_links
 from app.pipeline.types import CleanReview, RawReview, Tag
-from app.pipeline.worker import acquire_worker_lease, enforce_l2_threshold, other_share_from_tags, recover_stale_active_runs
+from app.pipeline.worker import (
+    acquire_worker_lease,
+    build_l2_action_targets,
+    enforce_l2_threshold,
+    is_analysis_candidate,
+    load_stored_reviews,
+    other_share_from_tags,
+    recover_stale_active_runs,
+)
 from app.repository import get_latest_run_logs, get_run_cost_rollup
 
 
@@ -320,7 +328,7 @@ def test_gemini_classification_prompt_is_slim():
     prompt = gateway._classification_prompt([review], {"payments_or_refunds": ["payment_debited_without_service"], "other": ["other"]})
 
     assert prompt["reviews"] == [[1, 1, "Payment failed"]]
-    assert prompt["output_format"] == "[row_id, l1_theme, l2_theme]"
+    assert prompt["output_format"] == "[row_id, l1_theme, l2_theme_or_null]"
     assert "severity" not in json.dumps(prompt)
     assert "english_gloss" not in json.dumps(prompt)
     assert "review_hash" not in json.dumps(prompt)
@@ -412,6 +420,97 @@ def test_gateway_routes_advice_question_to_dedicated_availability_theme_when_pre
     assert tags[0].l2_theme == "coverage_availability_inquiry"
 
 
+def test_analysis_selection_excludes_unexperienced_and_off_brand_social_posts():
+    def social(text: str, review_hash: str) -> CleanReview:
+        return CleanReview(source="reddit", review_hash=review_hash, text=text, date=date.today(), rating=None, language="en")
+
+    examples = [
+        "Hey, planning to visit chikmangalur what about signal coverage for airtel?? Anyone who visited can help!! Can we make calls?",
+        "I kinda found a trick in Spotify. For BSNL users out there, idk whether jio has that or airtel.",
+        "Jio AirFiber vs Airtel AirFiber? Need suggestions between Jio AirFiber and Airtel AirFiber for WFH. Which is cheaper?",
+        "Airtel WiFi 799 Plan latest month's Bill summary? Only need an image of taxes and breakdown to plan my yearly WiFi",
+        "[H] fastag recharge 1000 [W] 96% UPI available for Airtel fastag recharge",
+        "My Jio fiber disconnects every day and customer care ignores my complaint.",
+    ]
+    assert all(not is_analysis_candidate(social(text, str(index)), "airtel") for index, text in enumerate(examples))
+    assert is_analysis_candidate(
+        social("My Airtel fiber disconnects every day and customer care ignores my complaint.", "experienced"),
+        "airtel",
+    )
+    assert is_analysis_candidate(
+        CleanReview(source="play", review_hash="store", text="Airtel app crashes on every recharge", date=date.today(), rating=1, language="en"),
+        "airtel",
+    )
+
+
+def test_invalid_or_missing_l2_is_not_assigned_the_first_taxonomy_subtheme():
+    reviews = [
+        CleanReview(source="reddit", review_hash="first", text="My Airtel network has a problem", date=date.today(), rating=None, language="en"),
+        CleanReview(source="reddit", review_hash="second", text="My Airtel network is unreliable", date=date.today(), rating=None, language="en"),
+    ]
+    theme_set = {"network_connectivity": ["poor_signal_strength", "slow_internet_speeds"], "other": ["other"]}
+    gateway = LLMGateway(get_config(), TestSettings())
+
+    tags = gateway._validate_tags(
+        [[1, "network_connectivity", "made_up_label"], [2, "network_connectivity", None]],
+        reviews,
+        theme_set,
+    )
+    enforce_l2_threshold(tags, theme_set, min_parent_rows=1)
+
+    assert [tag.theme for tag in tags] == ["network_connectivity", "network_connectivity"]
+    assert [tag.l2_theme for tag in tags] == [None, None]
+
+
+def test_l2_action_targets_require_a_supporting_quote():
+    theme = Theme(
+        theme="network_connectivity",
+        l2_subthemes=[
+            {"label": "poor_signal_strength", "count": 5, "top_quotes": []},
+            {"label": "frequent_call_drops", "count": 8, "top_quotes": [{"text": "My Airtel calls drop every day."}]},
+        ],
+    )
+
+    targets = build_l2_action_targets([theme])
+
+    assert len(targets) == 1
+    assert targets[0]["id"] == 1
+    assert targets[0]["label"] == "frequent_call_drops"
+    assert targets[0]["representative_quotes"] == ["My Airtel calls drop every day."]
+
+
+def test_reprocess_input_reuses_stored_text_without_mutating_source_run():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with SessionLocal() as session:
+        company = Company(id="company-source", name="Airtel", brand_keyword="airtel")
+        source_run = Run(
+            id="source-run", company=company, status="done",
+            completeness={"reddit": {"status": "ok"}, "play": {"status": "ok"}},
+        )
+        session.add_all([
+            source_run,
+            Review(id="source-review-1", run_id=source_run.id, company_id=company.id, review_hash="hash-1", source="reddit", text="My Airtel signal disappears indoors", date=date.today(), rating=None, language="en", theme="other", l2_theme="other"),
+            Review(id="source-review-2", run_id=source_run.id, company_id=company.id, review_hash="hash-2", source="play", text="Airtel app crashes during recharge", date=date.today(), rating=1, language="en", theme="mobile_app", l2_theme="crashes"),
+        ])
+        session.commit()
+
+        raw, completeness, counts = load_stored_reviews(session, source_run.id, company.id)
+
+        assert len(raw) == 2
+        assert {(review.source, review.text, review.rating) for review in raw} == {
+            ("reddit", "My Airtel signal disappears indoors", None),
+            ("play", "Airtel app crashes during recharge", 1),
+        }
+        assert counts == {"reddit": 1, "play": 1}
+        assert all(item["provider"] == "stored_reviews" for item in completeness.values())
+        assert session.get(Run, source_run.id).status == "done"
+        assert session.get(Review, "source-review-1").theme == "other"
+        with pytest.raises(ValueError):
+            load_stored_reviews(session, source_run.id, "different-company")
+
+
 def test_l2_threshold_keeps_subthemes_only_for_parents_with_five_rows():
     theme_set = {"payments_or_refunds": ["refund_not_processed"], "login_or_kyc": ["otp_failure"], "other": ["other"]}
     tags = [
@@ -501,6 +600,24 @@ def test_l2_marketplace_listings_are_not_selected_as_customer_evidence():
             text="Want to sell S24 256gb lavender, one year old, original box and charger included.",
             theme="other",
             l2_theme="other",
+            date=date.today(),
+            rating=None,
+        )
+        for _ in range(5)
+    ]
+
+    l2_row = build_l2_subtheme_rows(reviews, recency_window_days=365)[0]
+
+    assert l2_row["count"] == 5
+    assert l2_row["top_quotes"] == []
+
+
+def test_l2_information_requests_are_not_presented_as_billing_failures():
+    reviews = [
+        Review(
+            text="Airtel WiFi 799 Plan latest month's Bill summary? Only need an image of taxes and breakdown.",
+            theme="billing_and_payments",
+            l2_theme="billing",
             date=date.today(),
             rating=None,
         )

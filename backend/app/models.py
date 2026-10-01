@@ -97,6 +97,9 @@ class Run(Base):
     company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
     owner_user_id: Mapped[Optional[str]] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True)
     guest_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    # A queued classification-only run can reuse the reviews already collected
+    # for this source run. The source report remains immutable until promotion.
+    reprocess_from_id: Mapped[Optional[str]] = mapped_column(GUID(), nullable=True, index=True)
     status: Mapped[str] = mapped_column(RunStatus, nullable=False, default="queued", index=True)
     model_used: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     source_counts: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)

@@ -88,6 +88,7 @@ class CompanyOut(BaseModel):
 class RunOut(BaseModel):
     id: str
     company_id: str
+    reprocess_from_id: Optional[str] = None
     status: str
     model_used: Optional[str] = None
     source_counts: Dict[str, Any]

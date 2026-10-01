@@ -1,7 +1,8 @@
 import asyncio
+import re
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from sqlalchemy import delete, desc, select, text
@@ -12,8 +13,9 @@ from app.models import Review, Run, RunLog, Theme
 from app.pipeline.apify import BudgetExceeded, scrape_sources
 from app.pipeline.cleaner import clean_and_dedup
 from app.pipeline.gateway import BATCH_POLL_TIMEOUT_SECONDS, LLMGateway, redact_llm_error
+from app.pipeline.text_quality import is_non_experiential_signal
 from app.pipeline.synth import build_report_snapshot, build_summary, build_theme_rows, humanize_theme
-from app.pipeline.types import CleanReview, MAX_L2_THEMES, Tag, ThemeSet
+from app.pipeline.types import CleanReview, MAX_L2_THEMES, RawReview, Tag, ThemeSet
 from app.repository import get_run_cost_rollup, get_settings, log_run_event, set_run_status
 
 
@@ -24,8 +26,13 @@ WORKER_LEASE_DURATION = timedelta(minutes=5)
 WORKER_LEASE_RENEW_SECONDS = 30
 
 
-def is_analysis_candidate(review: CleanReview) -> bool:
+def is_analysis_candidate(review: CleanReview, brand_keyword: str = "") -> bool:
+    if is_non_experiential_signal(review.text):
+        return False
     if review.source in {"reddit", "instagram", "twitter"}:
+        brand = brand_keyword.strip().casefold()
+        if brand and not re.search(rf"(?<!\w){re.escape(brand)}(?!\w)", review.text.casefold()):
+            return False
         return True
     return review.rating in {1, 2, 3}
 
@@ -43,8 +50,62 @@ def enforce_l2_threshold(tags: List[Tag], theme_set: ThemeSet, min_parent_rows: 
             tag.l2_theme = None
             continue
         allowed = theme_set.get(tag.theme, [])[:MAX_L2_THEMES]
-        if tag.l2_theme not in allowed:
-            tag.l2_theme = allowed[0] if allowed else None
+        if tag.theme == "other" or tag.l2_theme not in allowed:
+            tag.l2_theme = None
+
+
+def build_l2_action_targets(theme_rows: List[Theme]) -> List[Dict[str, object]]:
+    """Only request an action when the L2 has a supporting customer quote."""
+    targets: List[Dict[str, object]] = []
+    for theme in theme_rows:
+        for item in theme.l2_subthemes or []:
+            quotes = [
+                quote.get("text", "")[:240]
+                for quote in (item.get("top_quotes") or [])[:2]
+                if quote.get("text")
+            ]
+            if not quotes:
+                continue
+            targets.append(
+                {
+                    "id": len(targets) + 1,
+                    "theme": theme.theme,
+                    "display_theme": humanize_theme(theme.theme),
+                    "label": item.get("label"),
+                    "display_label": item.get("display_label") or humanize_theme(item.get("label")),
+                    "count": item.get("count"),
+                    "share": item.get("score"),
+                    "representative_quotes": quotes,
+                }
+            )
+    return targets
+
+
+def load_stored_reviews(
+    session, source_run_id: str, company_id: str
+) -> Tuple[List[RawReview], Dict[str, dict], Dict[str, int]]:
+    """Build a new analysis input from a prior run without editing that run."""
+    source_run = session.get(Run, source_run_id)
+    if source_run is None or source_run.company_id != company_id:
+        raise ValueError("Reprocess source run is unavailable for this company.")
+    source_rows = list(session.execute(select(Review).where(Review.run_id == source_run_id)).scalars())
+    if not source_rows:
+        raise ValueError("Reprocess source run has no stored reviews.")
+    raw_reviews = [
+        RawReview(source=row.source, text=row.text, date=row.date, rating=row.rating)
+        for row in source_rows
+    ]
+    source_counts = dict(Counter(row.source for row in source_rows))
+    completeness = {
+        source: {
+            "status": (source_run.completeness or {}).get(source, {}).get("status", "ok"),
+            "provider": "stored_reviews",
+            "count": count,
+            "reason": "Reclassified stored feedback without a new scrape.",
+        }
+        for source, count in source_counts.items()
+    }
+    return raw_reviews, completeness, source_counts
 
 
 def clear_run_outputs(session, run: Run) -> None:
@@ -225,6 +286,8 @@ class Worker:
                     return
                 settings = get_settings(session)
                 company = run.company
+                brand_keyword = company.brand_keyword
+                reprocess_from_id = getattr(run, "reprocess_from_id", None)
                 clear_run_outputs(session, run)
                 run.started_at = None
                 run.finished_at = None
@@ -237,30 +300,50 @@ class Worker:
                     stage="scraping",
                     event="stage_started",
                     status="ok",
-                    provider="apify",
-                    details={"max_reviews": settings.max_reviews, "budget_cap": float(settings.per_run_budget_usd)},
+                    provider="stored_reviews" if reprocess_from_id else "apify",
+                    details={
+                        "max_reviews": settings.max_reviews,
+                        "budget_cap": float(settings.per_run_budget_usd),
+                        "reprocess_from_id": reprocess_from_id,
+                    },
                 )
 
-            try:
-                raw_reviews, completeness, source_counts, cost = await scrape_sources(company, settings, config, 0)
-            except BudgetExceeded as exc:
+            if reprocess_from_id:
                 with session_scope() as session:
-                    run = session.get(Run, run_id)
-                    if run:
+                    raw_reviews, completeness, source_counts = load_stored_reviews(session, reprocess_from_id, company.id)
+                    cost = 0.0
+                    target_run = session.get(Run, run_id)
+                    if target_run:
                         log_run_event(
                             session,
-                            run,
+                            target_run,
                             stage="scraping",
-                            event="budget_exceeded",
-                            status="partial",
-                            provider="ingestion",
-                            cost_usd=float(settings.per_run_budget_usd),
-                            details={"error": str(exc)},
+                            event="stored_reviews_reused",
+                            status="ok",
+                            provider="stored_reviews",
+                            details={"source_run_id": reprocess_from_id, "reused_reviews": len(raw_reviews), "source_counts": source_counts},
                         )
-                        run.completeness = {"budget": {"status": "aborted", "error": str(exc)}}
-                        run.cost_estimate = float(settings.per_run_budget_usd)
-                        set_run_status(session, run, "partial", str(exc))
-                return
+            else:
+                try:
+                    raw_reviews, completeness, source_counts, cost = await scrape_sources(company, settings, config, 0)
+                except BudgetExceeded as exc:
+                    with session_scope() as session:
+                        run = session.get(Run, run_id)
+                        if run:
+                            log_run_event(
+                                session,
+                                run,
+                                stage="scraping",
+                                event="budget_exceeded",
+                                status="partial",
+                                provider="ingestion",
+                                cost_usd=float(settings.per_run_budget_usd),
+                                details={"error": str(exc)},
+                            )
+                            run.completeness = {"budget": {"status": "aborted", "error": str(exc)}}
+                            run.cost_estimate = float(settings.per_run_budget_usd)
+                            set_run_status(session, run, "partial", str(exc))
+                    return
 
             with session_scope() as session:
                 run = session.get(Run, run_id)
@@ -313,13 +396,13 @@ class Worker:
                     stage="scraping",
                     event="stage_completed",
                     status="ok",
-                    provider="apify",
+                    provider="stored_reviews" if reprocess_from_id else "apify",
                     cost_usd=float(cost),
-                    details={"source_counts": source_counts, "raw_reviews": len(raw_reviews)},
+                    details={"source_counts": source_counts, "raw_reviews": len(raw_reviews), "reprocess_from_id": reprocess_from_id},
                 )
 
             cleaned_all, dedup_ratio = clean_and_dedup(raw_reviews, float(settings.dedup_threshold))
-            cleaned = [review for review in cleaned_all if is_analysis_candidate(review)]
+            cleaned = [review for review in cleaned_all if is_analysis_candidate(review, brand_keyword)]
             selected_source_counts: Dict[str, int] = {}
             for review in cleaned:
                 selected_source_counts[review.source] = selected_source_counts.get(review.source, 0) + 1
@@ -338,9 +421,10 @@ class Worker:
                     details={
                         "raw_reviews": len(raw_reviews),
                         "cleaned_before_rating_filter": len(cleaned_all),
+                        "excluded_non_feedback_or_off_brand": len(cleaned_all) - len(cleaned),
                         "cleaned_reviews": len(cleaned),
                         "selected_reviews": len(cleaned),
-                        "selection_rule": "rating_1_2_3_for_rated_review_sources_plus_selected_social_mentions",
+                        "selection_rule": "rating_1_2_3_for_rated_sources_plus_brand_relevant_experiential_social_mentions",
                         "raw_source_counts": source_counts,
                         "selected_source_counts": selected_source_counts,
                         "dedup_ratio": dedup_ratio,
@@ -408,7 +492,8 @@ class Worker:
                         "cleaned_reviews": len(cleaned),
                         "classified_reviews": len(cleaned),
                         "reused_reviews": 0,
-                        "reason": "incremental tag reuse disabled; every run is a full reclassification",
+                        "reason": "Stored text may be reused; every run receives a full fresh classification",
+                        "reprocess_from_id": reprocess_from_id,
                     },
                 )
 
@@ -430,7 +515,7 @@ class Worker:
 
                 return log_llm_progress
 
-            gateway = LLMGateway(config, settings, progress_callback=make_llm_progress_logger("classification"))
+            gateway = LLMGateway(config, settings, progress_callback=make_llm_progress_logger("classification"), business_name=company.name)
             with session_scope() as session:
                 run = session.get(Run, run_id)
                 if run is None:
@@ -550,7 +635,11 @@ class Worker:
                     tag = tag_map.get(row.review_hash)
                     if tag:
                         row.theme = tag.theme if tag.theme in theme_set else "other"
-                        row.l2_theme = tag.l2_theme if row.theme in theme_set else "other"
+                        row.l2_theme = (
+                            tag.l2_theme
+                            if row.theme != "other" and tag.l2_theme in theme_set.get(row.theme, [])
+                            else None
+                        )
 
                 run.cost_estimate = round(float(run.cost_estimate or 0) + usage.cost_usd, 4)
                 run.quarantine_rate = min(1, usage.quarantined_batches / usage.total_batches) if usage.total_batches else 0
@@ -633,30 +722,7 @@ class Worker:
                         }
                         for theme in summary["top_themes"][:5]
                     ],
-                    "l2_action_targets": [
-                        {
-                            "id": target_id,
-                            "theme": theme.theme,
-                            "display_theme": humanize_theme(theme.theme),
-                            "label": item.get("label"),
-                            "display_label": item.get("display_label") or humanize_theme(item.get("label")),
-                            "count": item.get("count"),
-                            "share": item.get("score"),
-                            "representative_quotes": [
-                                quote.get("text", "")[:240]
-                                for quote in (item.get("top_quotes") or [])[:2]
-                                if quote.get("text")
-                            ],
-                        }
-                        for target_id, (theme, item) in enumerate(
-                            (
-                                (theme, item)
-                                for theme in theme_rows
-                                for item in (theme.l2_subthemes or [])
-                            ),
-                            start=1,
-                        )
-                    ],
+                    "l2_action_targets": build_l2_action_targets(theme_rows),
                 }
                 log_run_event(
                     session,

@@ -613,8 +613,8 @@ function ThemeDensityPanel({
   expandedThemes: Set<string>;
   onToggle: (themeId: string) => void;
 }) {
-  const themes = results.themes.slice(0, 8);
-  const maxScore = Math.max(...themes.map((theme) => Number(theme.theme_score || 0)), 0.001);
+  const themes = results.themes.filter((theme) => theme.theme !== "other").sort((a, b) => b.count - a.count).slice(0, 8);
+  const maxCount = Math.max(...themes.map((theme) => theme.count), 1);
   const l2Count = themes.reduce((total, theme) => total + (theme.l2_subthemes?.length || 0), 0);
   const otherShare = Number(results.summary.other_share || 0);
 
@@ -623,7 +623,7 @@ function ThemeDensityPanel({
       <div className="section-title-row">
         <div>
           <h2>Thematic Density</h2>
-          <p>L1 themes by share and score, with L2 sub-issues expanded for parents with at least 5 rows.</p>
+          <p>Issue themes ranked by review volume, with L2 sub-issues expanded for parents with at least 5 rows.</p>
         </div>
         <div className={`density-badge ${otherShare > 0.15 ? "warn" : ""}`}>
           Other {Math.round(otherShare * 100)}% · {l2Count} L2
@@ -633,7 +633,7 @@ function ThemeDensityPanel({
         {themes.map((theme) => {
           const expanded = expandedThemes.has(theme.id);
           const hasL2 = Boolean(theme.l2_subthemes?.length);
-          const scorePct = Math.max(2, Math.round((Number(theme.theme_score || 0) / maxScore) * 100));
+          const scorePct = Math.max(2, Math.round((theme.count / maxCount) * 100));
           const sharePct = Math.round(Number(theme.share ?? theme.normalized_frequency ?? 0) * 100);
           return (
             <div className="density-row" key={theme.id}>
@@ -642,7 +642,7 @@ function ThemeDensityPanel({
                 <span className="density-bar" aria-hidden="true">
                   <span style={{ width: `${scorePct}%` }} />
                 </span>
-                <span className="density-impact">{theme.count} rows · {sharePct}% · score {Number(theme.theme_score || 0).toFixed(3)}</span>
+                <span className="density-impact">{theme.count} reviews · {sharePct}%</span>
                 {hasL2 ? (expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />) : <span className="density-empty">No L2</span>}
               </button>
               {expanded && hasL2 ? (
