@@ -1009,6 +1009,13 @@ button:disabled {
   color: #646b78;
 }
 
+.service-wake-message {
+  margin: 12px 0 0;
+  color: #646b78;
+  font-size: 14px;
+  font-weight: 700;
+}
+
 .setup-actions.split-actions {
   align-items: center;
 }

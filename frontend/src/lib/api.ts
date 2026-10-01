@@ -6,6 +6,7 @@ const API_BASE = import.meta.env.DEV
 const GUEST_ID_KEY = "voc_guest_id";
 const AUTH_TOKEN_KEY = "voc_auth_token";
 const AUTH_USER_KEY = "voc_auth_user";
+const RENDER_WAKE_RETRY_DELAYS_MS = [5_000, 10_000, 15_000, 20_000, 25_000];
 
 export type AuthUser = {
   id: string;
@@ -242,25 +243,44 @@ function authHeaders() {
   return headers;
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE}${path}`, {
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        ...authHeaders(),
-        ...(options?.headers || {}),
-      },
-    });
-  } catch {
-    throw new Error("Could not reach the analysis service. Please try again.");
-  }
-  if (!response.ok) {
+async function request<T>(path: string, options?: RequestInit, onWakeRetry?: () => void): Promise<T> {
+  const method = (options?.method || "GET").toUpperCase();
+  // Render's free service can reject requests while waking; replay only reads and the pure discovery lookup.
+  const retrySafe = method === "GET" || (method === "POST" && path === "/api/onboarding/discover");
+  let attempt = 0;
+
+  while (true) {
+    let response: Response;
+    try {
+      response = await fetch(`${API_BASE}${path}`, {
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeaders(),
+          ...(options?.headers || {}),
+        },
+      });
+    } catch {
+      throw new Error("Could not reach the analysis service. Please try again.");
+    }
+    if (response.ok) return response.json() as Promise<T>;
+
     const body = await response.text();
+    const wakingAtRender = response.status === 429 && response.headers.get("x-render-routing") === "hibernate-rate-limited";
+    if (retrySafe && wakingAtRender) {
+      const delayMs = RENDER_WAKE_RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined) {
+        throw new Error("The analysis service is still waking up. Wait a minute and try again.");
+      }
+      attempt += 1;
+      onWakeRetry?.();
+      const jitterMs = Math.floor(Math.random() * 2_000);
+      await new Promise((resolve) => window.setTimeout(resolve, delayMs + jitterMs));
+      continue;
+    }
+
     throw new Error(body || response.statusText);
   }
-  return response.json() as Promise<T>;
 }
 
 export const api = {
@@ -284,11 +304,11 @@ export const api = {
   logout() {
     clearAuth();
   },
-  discoverCompany(payload: { name: string; website?: string; business_type?: string }) {
+  discoverCompany(payload: { name: string; website?: string; business_type?: string }, onWakeRetry?: () => void) {
     return request<CompanyDiscovery>("/api/onboarding/discover", {
       method: "POST",
       body: JSON.stringify(payload),
-    });
+    }, onWakeRetry);
   },
   submitRun(payload: SubmitRunPayload) {
     return request<{ run: Run; deduped_existing: boolean }>("/api/runs", {
