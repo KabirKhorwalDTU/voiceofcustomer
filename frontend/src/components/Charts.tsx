@@ -1,4 +1,4 @@
-import { Bar, Doughnut, Line } from "react-chartjs-2";
+import { Bar, Doughnut } from "react-chartjs-2";
 import type { Results } from "../lib/api";
 
 const palette = ["#00685f", "#2f6fed", "#d77a2b", "#6d4aff", "#c44536", "#108a51", "#a53d74", "#5a6673"];
@@ -30,7 +30,6 @@ const compactOptions = {
 export function ResultsCharts({ results }: { results: Results }) {
   const ratingEntries = entries(results.summary.rating_distribution);
   const sourceEntries = entries(results.summary.source_mix);
-  const volumeEntries = entries(results.summary.volume_over_time);
   const sourceQuality = Array.isArray(results.summary.source_quality)
     ? results.summary.source_quality as Array<{ source: string; rows: number; useful_rows: number; non_other_pct?: number }>
     : [];
@@ -40,16 +39,15 @@ export function ResultsCharts({ results }: { results: Results }) {
     .sort((a, b) => b.yield - a.yield);
   const hasSourceComparison = sourceQuality.length > 1 || sourceEntries.length > 1;
   const hasSourceYield = sourceYield.length > 0;
-  const hasVolumeTrend = volumeEntries.length > 1;
   const hasRatings = ratingEntries.length > 0;
-  const panelCount = [hasRatings, hasVolumeTrend, hasSourceComparison, hasSourceYield].filter(Boolean).length;
+  const panelCount = [hasRatings, hasSourceComparison, hasSourceYield].filter(Boolean).length;
 
   if (!panelCount) return null;
 
   return (
     <section className="section-block feedback-patterns">
       <div className="section-title-row">
-        <div><h2>Feedback patterns</h2><p>See the feedback mix, momentum, source contribution, and which listening posts return the most actionable signal.</p></div>
+        <div><h2>Feedback patterns</h2><p>See the feedback mix, source contribution, and which listening posts return the most actionable signal.</p></div>
       </div>
       <div className={"chart-grid compact-chart-grid panels-" + panelCount}>
         {hasRatings ? (
@@ -58,17 +56,6 @@ export function ResultsCharts({ results }: { results: Results }) {
             <div className="chart-canvas">
               <Bar
                 data={{ labels: ratingEntries.map(([key]) => `${key} star`), datasets: [{ label: "Selected reviews", data: ratingEntries.map(([, value]) => value), backgroundColor: palette[2] }] }}
-                options={{ ...compactOptions, plugins: { legend: { display: false } } }}
-              />
-            </div>
-          </section>
-        ) : null}
-        {hasVolumeTrend ? (
-          <section className="chart-panel">
-            <h3>Feedback volume over time</h3>
-            <div className="chart-canvas">
-              <Line
-                data={{ labels: volumeEntries.map(([key]) => key), datasets: [{ label: "Selected reviews", data: volumeEntries.map(([, value]) => value), borderColor: palette[1], backgroundColor: "#dbeafe", tension: 0.25, fill: true }] }}
                 options={{ ...compactOptions, plugins: { legend: { display: false } } }}
               />
             </div>
