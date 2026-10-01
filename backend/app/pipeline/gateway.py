@@ -10,6 +10,11 @@ import httpx
 
 from app.config import AppConfig
 from app.pipeline.types import CleanReview, MAX_L1_THEMES, MAX_L2_THEMES, Tag, ThemeSet
+from app.pipeline.text_quality import (
+    is_advice_seeking_without_firsthand_experience,
+    is_marketplace_listing,
+    is_non_experiential_signal,
+)
 
 
 @dataclass
@@ -86,6 +91,19 @@ def _format_http_error(exc: Exception) -> str:
     if isinstance(exc, httpx.HTTPStatusError):
         return _format_response_error(exc.response)
     return str(exc)
+
+
+def _trim_to_word_boundary(value: Any, limit: int) -> str:
+    compact = " ".join(str(value or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[:limit].rsplit(" ", 1)[0].rstrip(" ,;:-")
+
+
+_QUOTE_STOP_WORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have", "in", "is", "it",
+    "of", "on", "or", "the", "this", "to", "with", "i", "we",
+}
 
 
 ProgressCallback = Callable[[Dict[str, Any]], Awaitable[None]]
@@ -217,7 +235,11 @@ class LLMGateway:
                 "Answer the selected mission and optional focus directly.",
                 "Keep every string concise and owner-readable.",
                 "Return exactly five executive_pulse_points and exactly five recommended_actions.",
-                "For every l2_action_target, return one practical l2_subtheme_action using its label, count, and representative quote when present.",
+                "For every l2_action_target, return one practical analyst action grounded in its theme and evidence.",
+                "Each L2 action should name a concrete diagnostic step, the evidence to check, and a customer outcome to measure.",
+                "Do not repeat the review count or theme label in the action, quote or paraphrase a customer review, or write a generic 'check whether reports share a failure' instruction.",
+                "A question seeking future or peer advice is not proof of a service failure; use a supplied inquiry or availability theme if present, otherwise use other.",
+                "For an inquiry or availability theme, verify the requested information and close the information gap; do not prescribe a failure fix.",
                 "Phrase actions as checks or experiments when the evidence does not establish a cause; do not claim a fix will work.",
                 "Return strict JSON only.",
             ],
@@ -368,6 +390,8 @@ class LLMGateway:
                 "Do not use complaint/feature_request/praise buckets.",
                 "Create specific, human-meaningful L1 issue themes for low-rated customer feedback.",
                 "For each L1, create concrete L2 sub-issues users are describing.",
+                "Do not turn future-use questions, peer-advice requests, sales listings, or unrelated discussion into experienced failures.",
+                "If a repeated signal is only a question about future coverage or availability, label it as an inquiry rather than a coverage failure.",
                 "Prefer a specific nearest L1 over other; reserve other for isolated or unclear feedback.",
                 "Keep labels concise snake_case.",
                 "Return strict JSON only.",
@@ -432,8 +456,8 @@ class LLMGateway:
                 target_id = int(item.get("id"))
             except (TypeError, ValueError):
                 continue
-            action = " ".join(str(item.get("action") or "").split())[:240]
-            if action:
+            action = _trim_to_word_boundary(item.get("action") or "", 240)
+            if action and self._usable_l2_action(action, targets, target_id):
                 model_l2_actions.setdefault(target_id, action)
         l2_actions = [
             {
@@ -518,15 +542,7 @@ class LLMGateway:
 
         l2_subtheme_actions = []
         for target in evidence.get("l2_action_targets") or []:
-            l2_label = str(target.get("display_label") or target.get("label") or "this sub-issue")
-            l2_count = int(target.get("count") or 0)
-            quote_rows = target.get("representative_quotes") or []
-            quote = " ".join(str(quote_rows[0] or "").split())[:100] if quote_rows else ""
-            if quote:
-                action = f"Check whether the {l2_count} {l2_label} reports share a failure, starting with ‘{quote}’, then test a focused fix."
-            else:
-                action = f"Review the {l2_count} {l2_label} reports, isolate any shared failure point, and test a focused fix."
-            l2_subtheme_actions.append({"id": target.get("id"), "action": action[:240]})
+            l2_subtheme_actions.append({"id": target.get("id"), "action": self._fallback_l2_action(target)})
 
         return {
             "headline": (
@@ -541,6 +557,60 @@ class LLMGateway:
             "mission": {"goals": goals[:3], "focus": (focus or "")[:600]},
         }
 
+    def _usable_l2_action(self, action: str, targets: List[Dict[str, Any]], target_id: int) -> bool:
+        lowered = action.casefold()
+        generic_phrases = (
+            "starting with",
+            "reports share a failure",
+            "test a focused fix",
+            "review the available tagged feedback",
+        )
+        if any(phrase in lowered for phrase in generic_phrases):
+            return False
+        target = next((item for item in targets if str(item.get("id", "")).isdigit() and int(item["id"]) == target_id), {})
+        count = str(target.get("count") or "").strip()
+        if count.isdigit() and re.search(
+            rf"\b{re.escape(count)}\s+(?:[a-z0-9.-]+\s+){{0,5}}(?:reports?|reviews?)\b",
+            lowered,
+        ):
+            return False
+        action_words = set(re.findall(r"[a-z0-9]+", lowered))
+        for quote in target.get("representative_quotes") or []:
+            compact_quote = " ".join(str(quote or "").split()).casefold()
+            if len(compact_quote) >= 32 and compact_quote in lowered:
+                return False
+            quote_words = set(re.findall(r"[a-z0-9]+", compact_quote)) - _QUOTE_STOP_WORDS
+            if len(quote_words) >= 6 and len(quote_words & action_words) / len(quote_words) >= 0.68:
+                return False
+        return True
+
+    def _fallback_l2_action(self, target: Dict[str, Any]) -> str:
+        context = " ".join(
+            str(target.get(key) or "")
+            for key in ("theme", "display_theme", "label", "display_label")
+        ).casefold().replace("_", " ")
+        if "other" in context:
+            return "Audit a sample of these reports, separate unrelated content from coherent customer issues, then correct the taxonomy before assigning a product fix."
+        if any(term in context for term in ("inquiry", "question", "availability")):
+            return "Verify coverage and recent outage data for the requested locations, publish a clear availability answer, and track whether customer inquiries are resolved."
+        if any(term in context for term in ("wifi", "broadband", "router", "fiber", "fibre", "outage")):
+            return "Group reports by service area and router model; verify line diagnostics and incident logs, then track repeat outages after a targeted test."
+        if any(term in context for term in ("speed", "latency", "slow internet", "slow loading")):
+            return "Segment reports by location, device, network type, and time; compare performance telemetry and track speed or latency after a focused test."
+        if any(term in context for term in ("call drop", "dropped call", "frequent call", "call failure")):
+            return "Compare call-drop reports by location, device, and time with network telemetry; field-test repeated gaps and track call completion."
+        if any(term in context for term in ("dead zone", "coverage", "signal", "no signal", "network")):
+            return "Map reported locations and times against coverage and outage data; field-test repeated gaps and track call completion and dropped-call rates."
+        if any(term in context for term in ("support", "agent", "complaint", "ticket", "chatbot", "customer care")):
+            return "Trace a sample from first contact through resolution; identify where cases stall, then track resolution time and repeat contacts after a workflow test."
+        if any(term in context for term in ("refund", "payment", "billing", "charge", "transaction")):
+            return "Trace affected transactions from charge to settlement; verify the failing step and track successful resolution and repeat contacts after a process test."
+        if any(term in context for term in ("crash", "app", "usability", "navigation", "performance")):
+            return "Reproduce the reported flow on affected devices, isolate the failing step, then track task completion and crash rates after a targeted release."
+        if any(term in context for term in ("staff", "store", "service", "waiting")):
+            return "Compare reports by location and visit time, verify staffing and service records, then track wait time and resolution rates after a local test."
+        return "Group reports by customer journey and source, validate the most repeated cause against operational evidence, then measure the outcome of a targeted test."
+
     def _classification_prompt(self, reviews: List[CleanReview], theme_set: ThemeSet) -> Dict[str, Any]:
         return {
             "task": "classify_reviews_l1_l2",
@@ -548,6 +618,8 @@ class LLMGateway:
                 "Use only the supplied L1 themes and their L2 sub-issues.",
                 "Prefer the nearest specific L1 theme over other.",
                 "Use other only if no supplied L1 reasonably fits.",
+                "A question asking for future, planned, or peer advice is not an experienced failure; use a supplied inquiry or availability theme if present, otherwise use other.",
+                "Do not classify listings, promotions, or unrelated discussion as customer feedback about a product or service issue.",
                 "Return strict JSON only.",
                 "Return one row per input row.",
                 "Output compact arrays in this exact order: [row_id, l1_theme, l2_theme].",
@@ -827,14 +899,31 @@ class LLMGateway:
             allowed_l2 = theme_set.get(theme, [])
             if not l2_theme or l2_theme not in set(allowed_l2):
                 l2_theme = allowed_l2[0] if allowed_l2 else "other"
-            tags.append(
-                Tag(
-                    review_hash=review.review_hash,
-                    theme=theme,
-                    l2_theme=l2_theme,
-                )
+            tag = Tag(
+                review_hash=review.review_hash,
+                theme=theme,
+                l2_theme=l2_theme,
             )
+            tags.append(self._route_non_experiential_tag(review, tag, theme_set))
         return tags
+
+    def _route_non_experiential_tag(self, review: CleanReview, tag: Tag, theme_set: ThemeSet) -> Tag:
+        if not is_non_experiential_signal(review.text):
+            return tag
+        if not is_marketplace_listing(review.text) and is_advice_seeking_without_firsthand_experience(review.text):
+            for candidate_theme, candidate_subthemes in theme_set.items():
+                if candidate_theme == "other":
+                    continue
+                for candidate_subtheme in candidate_subthemes:
+                    inquiry_context = f"{candidate_theme} {candidate_subtheme}".casefold()
+                    if any(term in inquiry_context for term in ("inquiry", "question", "availability")):
+                        return Tag(review_hash=review.review_hash, theme=candidate_theme, l2_theme=candidate_subtheme)
+        other_subthemes = theme_set.get("other", ["other"])
+        return Tag(
+            review_hash=review.review_hash,
+            theme="other",
+            l2_theme=other_subthemes[0] if other_subthemes else "other",
+        )
 
     def _normalize_theme_label(self, value: Any) -> str:
         label = str(value or "").strip().lower()
@@ -889,11 +978,12 @@ class LLMGateway:
             theme = "other"
             l2_theme = "other"
 
-        return Tag(
+        tag = Tag(
             review_hash=review.review_hash,
             theme=theme,
             l2_theme=l2_theme,
         )
+        return tag if quarantine else self._route_non_experiential_tag(review, tag, theme_set)
 
     def _gloss(self, text: str) -> str:
         replacements = {
