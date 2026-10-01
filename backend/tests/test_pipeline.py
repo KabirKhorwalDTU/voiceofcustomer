@@ -1,5 +1,7 @@
 import asyncio
 import json
+import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -18,6 +20,7 @@ from app.pipeline.synth import build_l2_subtheme_rows
 from app.pipeline.resolver import resolve_links
 from app.pipeline.types import CleanReview, RawReview, Tag
 from app.pipeline.worker import (
+    Worker,
     acquire_worker_lease,
     build_l2_action_targets,
     completed_classification_batch,
@@ -47,6 +50,38 @@ class TestCompany:
     maps_enabled = False
     maps_location_hint = "India"
     reddit_enabled = True
+
+
+def test_worker_keeps_api_loop_responsive_during_blocking_report_work(monkeypatch):
+    worker = Worker()
+    processed = threading.Event()
+
+    async def ready():
+        return True
+
+    async def recover():
+        return None
+
+    async def blocking_process(_run_id):
+        time.sleep(0.2)
+        processed.set()
+        worker._stop.set()
+
+    monkeypatch.setattr(worker, "ensure_worker_lease", ready)
+    monkeypatch.setattr(worker, "recover_stale_runs_if_needed", recover)
+    monkeypatch.setattr(worker, "next_run_id", lambda: "run-1")
+    monkeypatch.setattr(worker, "process", blocking_process)
+
+    async def check():
+        task = asyncio.create_task(worker.loop())
+        start = asyncio.get_running_loop().time()
+        await asyncio.sleep(0.02)
+        elapsed = asyncio.get_running_loop().time() - start
+        assert elapsed < 0.1
+        await task
+        assert processed.is_set()
+
+    asyncio.run(check())
 
 
 def test_business_type_recommendations_and_source_order_are_stable():
@@ -1233,5 +1268,34 @@ def test_batch_resume_reads_existing_output_without_submitting_again():
         )
         assert tags[0].theme == "network_connectivity"
         assert usage.quarantined_batches == 0
+
+    asyncio.run(run())
+
+
+def test_batch_resume_excludes_only_malformed_chunk_without_new_model_calls():
+    async def run():
+        reviews = [
+            CleanReview(source="play", review_hash=f"h{index}", text="No signal at home", date=date.today(), rating=1, language="en")
+            for index in range(101)
+        ]
+        gateway = LLMGateway(AppConfig(gemini_api_key="test", allow_dev_llm_fallback=False), TestSettings())
+
+        async def saved_output(_operation, timeout_seconds):
+            return [
+                {"response": {"candidates": [{"content": {"parts": [{"text": "not json"}]}}]}},
+                {"response": {"candidates": [{"content": {"parts": [{"text": '[[1,"network_connectivity","poor_signal"]]'}]}}]}},
+            ]
+
+        async def repair(_payload):
+            raise AssertionError("quarantining one chunk must not make new model calls")
+
+        gateway._poll_batch = saved_output
+        gateway._json_call = repair
+        tags, usage = await gateway.classify_all(
+            reviews, {"network_connectivity": ["poor_signal"], "other": ["other"]}, existing_operation="batches/existing"
+        )
+        assert len(tags) == 1
+        assert tags[0].review_hash == "h100"
+        assert usage.quarantined_batches == 1
 
     asyncio.run(run())

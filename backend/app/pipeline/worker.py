@@ -273,7 +273,9 @@ class Worker:
             await self.recover_stale_runs_if_needed()
             run_id = self.next_run_id()
             if run_id:
-                await self.process(run_id)
+                # Report assembly and database writes are synchronous. Keep them off
+                # the API event loop so health checks and lease renewal stay responsive.
+                await asyncio.to_thread(lambda: asyncio.run(self.process(run_id)))
             else:
                 await asyncio.sleep(1.5)
 
@@ -655,6 +657,8 @@ class Worker:
                             },
                         )
             enforce_l2_threshold(tags, theme_set, min_parent_rows=5)
+            if not tags:
+                raise RuntimeError("No classification batches produced usable tags.")
             tag_map: Dict[str, Tag] = {tag.review_hash: tag for tag in tags}
             mission_evidence: Dict[str, object] = {}
             mission_goals: List[str] = []
@@ -665,15 +669,22 @@ class Worker:
                 if run is None:
                     return
                 rows = list(session.execute(select(Review).where(Review.run_id == run.id)).scalars())
+                excluded_reviews = 0
                 for row in rows:
                     tag = tag_map.get(row.review_hash)
-                    if tag:
-                        row.theme = tag.theme if tag.theme in theme_set else "other"
-                        row.l2_theme = (
-                            tag.l2_theme
-                            if row.theme != "other" and tag.l2_theme in theme_set.get(row.theme, [])
-                            else None
-                        )
+                    if tag is None:
+                        session.delete(row)
+                        excluded_reviews += 1
+                        continue
+                    row.theme = tag.theme if tag.theme in theme_set else "other"
+                    row.l2_theme = (
+                        tag.l2_theme
+                        if row.theme != "other" and tag.l2_theme in theme_set.get(row.theme, [])
+                        else None
+                    )
+                session.flush()
+                if excluded_reviews:
+                    run.source_counts = dict(Counter(row.source for row in rows if row.review_hash in tag_map))
 
                 run.cost_estimate = round(float(run.cost_estimate or 0) + usage.cost_usd, 4)
                 run.quarantine_rate = min(1, usage.quarantined_batches / usage.total_batches) if usage.total_batches else 0
@@ -698,6 +709,7 @@ class Worker:
                         "malformed_retries": usage.malformed_retries,
                         "progress_events": usage.progress_events[-50:],
                         "tagged_reviews": len(tags),
+                        "excluded_reviews": excluded_reviews,
                         "other_share_before_repair": round(other_share_before_repair, 4),
                         "other_share_after_repair": round(other_share_after_repair, 4),
                         "l2_min_parent_reviews": 5,
@@ -840,7 +852,7 @@ class Worker:
                     set_run_status(session, run, "partial", "Budget cap exceeded after mission synthesis")
 
                 failed_sources = [src for src, status in (run.completeness or {}).items() if status.get("status") not in {"ok", "disabled"}]
-                terminal = "partial" if failed_sources or run.status == "partial" else "done"
+                terminal = "partial" if failed_sources or run.status == "partial" or usage.quarantined_batches else "done"
                 log_run_event(
                     session,
                     run,

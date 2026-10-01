@@ -340,10 +340,11 @@ class LLMGateway:
                 tags.extend(self._validate_tags(data, batch, theme_set))
                 await self._emit_progress("batch_response_parse_completed", batch_index=index, total_batches=len(chunks), batch_size=len(batch), quarantined=False)
             except Exception as exc:
-                self.usage.quarantined_batches += 1
                 self.usage.malformed_retries.append({"attempt": f"batch_{index}", "reason": redact_llm_error(exc)})
-                tags.extend(self._heuristic_tag(review, theme_set, quarantine=True) for review in batch)
-                await self._emit_progress("batch_response_parse_completed", batch_index=index, total_batches=len(chunks), batch_size=len(batch), quarantined=True, error=redact_llm_error(exc))
+                # Exclude this batch from the report rather than inventing tags.
+                # The successful batch responses remain usable as-is.
+                self.usage.quarantined_batches += 1
+                await self._emit_progress("batch_response_parse_completed", batch_index=index, total_batches=len(chunks), batch_size=len(batch), quarantined=True, excluded_reviews=len(batch), error=redact_llm_error(exc))
         self.usage.path = "batch"
         return tags, self.usage
 
