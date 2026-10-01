@@ -340,10 +340,25 @@ class LLMGateway:
                 tags.extend(self._validate_tags(data, batch, theme_set))
                 await self._emit_progress("batch_response_parse_completed", batch_index=index, total_batches=len(chunks), batch_size=len(batch), quarantined=False)
             except Exception as exc:
-                self.usage.quarantined_batches += 1
                 self.usage.malformed_retries.append({"attempt": f"batch_{index}", "reason": redact_llm_error(exc)})
-                tags.extend(self._heuristic_tag(review, theme_set, quarantine=True) for review in batch)
-                await self._emit_progress("batch_response_parse_completed", batch_index=index, total_batches=len(chunks), batch_size=len(batch), quarantined=True, error=redact_llm_error(exc))
+                # A single malformed Gemini response must only regenerate its
+                # own reviews. Smaller synchronous requests avoid repeating a
+                # truncated 100-row response and leave the other 25 intact.
+                repaired_tags: List[Tag] = []
+                quarantined = False
+                for offset in range(0, len(batch), 25):
+                    fragment = batch[offset : offset + 25]
+                    try:
+                        repaired = await self._json_call(self._classification_prompt(fragment, theme_set))
+                        repaired_tags.extend(self._validate_tags(repaired, fragment, theme_set))
+                    except Exception as repair_exc:
+                        quarantined = True
+                        self.usage.malformed_retries.append({"attempt": f"batch_{index}_fragment_{offset // 25}", "reason": redact_llm_error(repair_exc)})
+                        repaired_tags.extend(self._heuristic_tag(review, theme_set, quarantine=True) for review in fragment)
+                if quarantined:
+                    self.usage.quarantined_batches += 1
+                tags.extend(repaired_tags)
+                await self._emit_progress("batch_response_parse_completed", batch_index=index, total_batches=len(chunks), batch_size=len(batch), quarantined=quarantined, repaired_fragments=(len(batch) + 24) // 25, error=redact_llm_error(exc))
         self.usage.path = "batch"
         return tags, self.usage
 

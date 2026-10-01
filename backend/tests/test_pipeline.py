@@ -1235,3 +1235,35 @@ def test_batch_resume_reads_existing_output_without_submitting_again():
         assert usage.quarantined_batches == 0
 
     asyncio.run(run())
+
+
+def test_batch_resume_repairs_only_malformed_chunk():
+    async def run():
+        reviews = [
+            CleanReview(source="play", review_hash=f"h{index}", text="No signal at home", date=date.today(), rating=1, language="en")
+            for index in range(101)
+        ]
+        gateway = LLMGateway(AppConfig(gemini_api_key="test", allow_dev_llm_fallback=False), TestSettings())
+        repaired_sizes = []
+
+        async def saved_output(_operation, timeout_seconds):
+            return [
+                {"response": {"candidates": [{"content": {"parts": [{"text": "not json"}]}}]}},
+                {"response": {"candidates": [{"content": {"parts": [{"text": '[[1,"network_connectivity","poor_signal"]]'}]}}]}},
+            ]
+
+        async def repair(payload):
+            rows = payload["reviews"]
+            repaired_sizes.append(len(rows))
+            return [[index, "network_connectivity", "poor_signal"] for index in range(1, len(rows) + 1)]
+
+        gateway._poll_batch = saved_output
+        gateway._json_call = repair
+        tags, usage = await gateway.classify_all(
+            reviews, {"network_connectivity": ["poor_signal"], "other": ["other"]}, existing_operation="batches/existing"
+        )
+        assert len(tags) == 101
+        assert repaired_sizes == [25, 25, 25, 25]
+        assert usage.quarantined_batches == 0
+
+    asyncio.run(run())
