@@ -41,6 +41,7 @@ export function OnboardingFlow({ onStarted, compact = false, initialName = "" }:
   const [twitterUrl, setTwitterUrl] = useState("");
   const [mouthshutUrl, setMouthshutUrl] = useState("");
   const [busy, setBusy] = useState(false);
+  const [serviceWaking, setServiceWaking] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -69,13 +70,17 @@ export function OnboardingFlow({ onStarted, compact = false, initialName = "" }:
     setBusy(true);
     setError("");
     try {
-      const result = await api.discoverCompany({ name: name.trim(), website: website.trim(), business_type: businessType });
+      const result = await api.discoverCompany(
+        { name: name.trim(), website: website.trim(), business_type: businessType },
+        () => setServiceWaking(true),
+      );
       setDiscovery(result);
       setBusinessType(result.business_type);
       setSelectedSources(result.recommended_sources);
     } catch (err) {
       setError(err instanceof Error ? err.message : "We could not find this business.");
     } finally {
+      setServiceWaking(false);
       setBusy(false);
     }
   }
@@ -203,8 +208,9 @@ export function OnboardingFlow({ onStarted, compact = false, initialName = "" }:
 
           <div className="setup-actions">
             <span>{discovery ? "Usually a few minutes, depending on selected sources." : "Business match only. No scan yet."}</span>
-            <button className="primary-button" disabled={busy}>{busy ? "Finding sources..." : discovery ? "Next: choose the mission" : "Find customer sources"}<ArrowRight size={17} /></button>
+            <button className="primary-button" disabled={busy}>{busy ? (serviceWaking ? "Waking service..." : "Finding sources...") : discovery ? "Next: choose the mission" : "Find customer sources"}<ArrowRight size={17} /></button>
           </div>
+          {serviceWaking ? <p className="service-wake-message" role="status">The analysis service is waking up. Retrying automatically.</p> : null}
         </form>
       ) : (
         <form className="setup-form mission-form" onSubmit={startAnalysis}>
