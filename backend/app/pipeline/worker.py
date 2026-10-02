@@ -340,7 +340,8 @@ class Worker:
             if reprocess_from_id:
                 with session_scope() as session:
                     raw_reviews, completeness, source_counts = load_stored_reviews(session, reprocess_from_id, company.id)
-                    cost = 0.0
+                    source_costs = get_run_cost_rollup(session, reprocess_from_id)
+                    cost = float((source_costs.get("apify") or {}).get("cost") or 0)
                     target_run = session.get(Run, run_id)
                     if target_run:
                         log_run_event(
@@ -352,6 +353,17 @@ class Worker:
                             provider="stored_reviews",
                             details={"source_run_id": reprocess_from_id, "reused_reviews": len(raw_reviews), "source_counts": source_counts},
                         )
+                        if cost:
+                            log_run_event(
+                                session,
+                                target_run,
+                                stage="scraping",
+                                event="source_acquisition_cost_reused",
+                                status="ok",
+                                provider="apify",
+                                cost_usd=cost,
+                                details={"source_run_id": reprocess_from_id, "basis": "Original Apify fetch cost for these stored reviews."},
+                            )
             else:
                 try:
                     raw_reviews, completeness, source_counts, cost = await scrape_sources(company, settings, config, 0)

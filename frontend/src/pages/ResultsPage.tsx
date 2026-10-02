@@ -151,7 +151,6 @@ export function ResultsPage() {
   const completeness = Object.entries(results?.run.completeness || {}) as Array<[string, { status: string; count?: number; error?: string; reason?: string }]>;
   const incomplete = completeness.filter(([, value]) => !["ok", "disabled"].includes(value.status));
   const otherShare = Number(results?.summary.other_share || 0);
-  const lowConfidence = Boolean(results && ((results.run.quarantine_rate || 0) > 0.2 || results.summary.low_confidence));
 
   const sourceOptions = useMemo(() => Object.keys(results?.summary.source_mix || {}).sort(), [results]);
   const themeOptions = useMemo(() => Array.from(new Set((results?.themes || []).map((theme) => theme.theme))).sort(), [results]);
@@ -351,11 +350,6 @@ export function ResultsPage() {
       {incomplete.length ? (
         <section className="banner warning report-notice">
           Partial data: {incomplete.map(([source, value]) => `${source} ${value.status}`).join(", ")}
-        </section>
-      ) : null}
-      {lowConfidence ? (
-        <section className="banner danger report-notice">
-          Low confidence: quarantine {Math.round((results.run.quarantine_rate || 0) * 100)}%, L1 other {Math.round(otherShare * 100)}%.
         </section>
       ) : null}
       {error ? <section className="banner danger report-notice">{error}</section> : null}
